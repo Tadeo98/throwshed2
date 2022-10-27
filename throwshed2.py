@@ -54,7 +54,7 @@ A_p = 0.0 #0.000208 #priemerny pridavok pre prvych 40 m ohybania sipu [m^2], exp
 
 
 #############################################################################
-## VYPOCET
+## PRACA S VRSTVAMI A VYPOCET
 
 
 # import DEM
