@@ -2,105 +2,121 @@
 ## THROWSHED ##
 #######################################################################
 
-import math
 import os
-
 import numpy as np
-## KNIZNICE
-#from matplotlib.style import use
 from osgeo import gdal, ogr, osr
 
+
 #######################################################################
-## CESTY
-dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\dem\dmr.tif" #cesta k dem
-point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\point\points1.shp"   #cesta k bodovej vrstve
-line_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\line\lines1.shp" #cesta k liniovej vektorovej vrstve
-throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\throwshed"  #cesta k priecinku, kde sa ulozi subor
-throwshed_file = r"throwshedtest"   #nazov vystupneho suboru s cistym throwshedom
-viewshed_file = r"viewshed" #nazov vystupneho suboru s viewshedom (nakoniec je vymazany)
-buffer_file = r"buffer"   #nazov vystupneho suboru s bufferom (nakoniec je vymazany)
+## FUNCTIONS
 
-## NASTAVENIA
-use_line = 1 #striela obranca spoza ohradenia alebo utocnik bez uvazovania prekazok v terene = 0, striela utocnik s uvazovanim hradieb ako prekazkami = 1
-use_viewshed = 1 #pouzitie viditelnosti na orezanie throwshedu, nie = 0, ano = 1
-band_number = 1 #vybrane pasmo z dem, default = 1
-int_compare = 0 #interpolacia DMR vo vypoctovych bodoch, nearest neighbour = 0, linear = 1
-keep_point_crs = 0 #vystupna vrstva ma suradnicovy system ako vstupna bodova? ano = 1, nie, nastavim EPSG noveho SS = 0
-cumulative_throwshed = 1 #pri viacerych miestach vystrelu vypocitat kumulativny throwshed? nie (len jednoduchy, 0 a 1) = 0, ano (hodnoty 0, 1, 2, 3...n) = 1
-EPSG = 8353 #EPSG kod (suradnicovy system) vystupnej vrstvy throwshedu
-
-## PREMENNE
-h = 1.7 #pociatocna vyska nad povrchom [m]
-alfa_min = 0.0 #minimalny uhol hodu/vystrelu [°]
-alfa_max = 45.0 #maximalny uhol hodu/vystrelu [°], polozit rovne alfa_min, ak sa striela iba pod jednym uhlom
-g = -9.81 #gravitacne zrychlenie [m/s^2]
-V_0 = 67 #pociatocna rychlost [m/s]
-ro = 1.225 #hustota vzduchu [kg/m^3], pri t = 15°C, H = 0m, Fi = 0# (suchy vzduch) sa ro = 1.225 kg/m^3
-C_d = 2.0 #koeficient odporu/ťahu objektu vo vzduchu
-A = 0.000050 #plocha prierezu šípu [m^2], A = 0.0001 m^2 pri kruhovom priereze s priemerom cca 11 mm, A = 0.00005 m^2 pri kruhovom priereze s priemerom cca 8 mm
-m = 0.035 #hmotnost šípu [kg]
-dt = 0.01 #casovy interval [s]
-dalfa = 5.0 #krok v uhle vystrelu [°]
-min_azimuth = 0.0 #minimalny azimut [°], (-360.0,360.0), ak sa riesi throwshed v celom okoli, tak min_azimuth = 0.0, mozne nastavit aj zaporne hodnoty, v pripade ze je nastavena vacsia hodnota ako max_azimuth, tak sa to prepocita do zapornej hodnoty
-max_azimuth = 360.0 #maximalny azimut [°], (0.0,360.0>, ak sa riesi throwshed v celom okoli, tak max_azimuth = 360.0, max_azimuth nasleduje v smere hodinovych ruciciek po min_azimuth
-dazimuth = 1.0 #krok v azimute [°]
-dr = 1.0 #krok vzdialenosti, pod ktorou sa bude vzdy interpolovat DMR a porovnavat sa s trajektoriou (dobre nastavit na velkost bunky rastra DMR) [m]
-h_E = 1.6 # vyska oci strielajuceho pre viewshed, defaultne 1.7 [m], prestavit na h-0.1m, ale pozor na imperialne jednotky
-h_T = 1.7 # vyska ciela pre viewshed, defaultne 0.0 [m]
-feet_height = 0.0 #vyska ochodze/valu (chodidiel) nad terenom, na ktorej stoji strielajuci obranca (ak stoji priamo na terene, tak feet_height = 0.0) [m]
-wall_height = 4.0 #vyska hradby, ktora ma pre strielajucich utocnikov predstavovat prekazku [m]
-const = 1   #1.25 #prenásobenie koeficientu odporu konstantou, platí len pre prvých 40 m letu
-A_p = 0.0 #0.000208 #priemerny pridavok pre prvych 40 m ohybania sipu [m^2], experimentalne
+def main(dem_path, point_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG, cumulative_throwshed,
+         h, V_0, C_d, A, m, h_E, h_T, wall_height, const, A_p, w_d, line_layer_path=None,
+         viewshed_file='viewshed', buffer_file='buffer', band_number=1, interpolation=1, keep_crs=1, alfa_min=-90,
+         alfa_max=90, g=-9.81, ro=1.225, dalfa=5, dr=None):
+    """Just main function that triggers everything else"""
+    dem_array, dem_band, dem_gt = get_raster_from_file(dem_path,band_number)
+    dem_height = get_min_height(dem_band)
+    point_layer, point_feat_count = get_layer_from_file(point_layer_path)
 
 
-#############################################################################
-## PRACA S VRSTVAMI A VYPOCET
+def get_raster_from_file(file_path,band_number):
+    """Get DEM array and geotransformation data"""
+    # import DEM datasource
+    dem_ds = gdal.Open(file_path)
+    # select band
+    dem_band = dem_ds.GetRasterBand(band_number)
+    # DEM cell values into array
+    dem_array = dem_band.ReadAsArray()
+    # transformation data describing DEM
+    dem_gt = dem_ds.GetGeoTransform()
+    return dem_array, dem_band, dem_gt
+
+def get_min_height(dem_band):
+    """Get minimal DEM height"""
+    # sometimes the function returns None, therefore statistics need to be calculated first
+    if dem_band.GetMinimum() == None:
+        dem_band.ComputeStatistics(0)
+    return dem_band.GetMinimum()
+
+def get_layer_from_file(file_path):
+    """Get layer from vector layer file"""
+    # import vector layer datasource
+    layer_ds = ogr.Open(file_path, 0)  # 1 = editing, 0 = read only. Datasource
+    # vector layer
+    layer = layer_ds.GetLayer()
+    # get feature count
+    feat_count = layer.GetFeatureCount()
+    return layer, feat_count
+
+    # Making sure the azimuth minumum and maximum are within the range of one circle (0;2pi) and their conversion to rads
+    min_azimuth, max_azimuth, dazimuth = min_azimuth / 360 % 1 * (2 * np.pi), max_azimuth / 360 % 1 * (
+                2 * np.pi), np.radians(dazimuth)
+    # in case of min azimuth being greater or equal than max azimuth, 2pi is added to max azimuth
+    if min_azimuth >= max_azimuth:
+        max_azimuth += np.pi * 2
+        # kontrola, ci su hodnoty uhla vystrelu spravne definovane
+        if alfa_max < alfa_min:
+            print("Minimalny uhol vystrelu ma vacsiu hodnotu ako maximalny. Opravit.")
+            exit()
+
+#######################################################################
+## PATHS
+dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\dem\dmr.tif" #path to DEM
+point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\point\points1.shp"   #path to point layer
+line_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\line\lines1.shp" #path to line layer, if obstacles are not to be used, set to None
+throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\throwshed"  #path to folder, where the file will be saved
+throwshed_file = r"throwshedtest1"   #name of output throwshed file
+viewshed_file = r"viewshed" #name of temporary file containing viewshed
+buffer_file = r"buffer"   #name of temporary file containing buffer
+
+## SETTINGS
+use_viewshed = 1 #utilization of viewshed, that will clip throwshed, No = 0, Yes = 1
+band_number = 1 #selected band from DEM, default = 1
+interpolation = 0 #interpolation of DEM to calculate altitude of shooting point or compare points within the DEM-to-trajectory comparison function, Nearest neighbour = 0, Bilinear = 1
+keep_crs = 0 #use CRS from input DEM for throwshed layer, Yes = 1, No = 0 (requires setting of EPSG variable)
+cumulative_throwshed = 1 #Calculate cumulative throwshed? No = 0, Yes = 1 (Apropriate with more than 1 shooting places)
+EPSG = 8353 #EPSG code for CRS of output throwshed layer
+
+## VARIABLES
+h = 1.7 #initial height of projectile above DEM when shot [m]
+alfa_min = 0.0 #minimum of vertical angle range at which the projectile is shot [°]
+alfa_max = 45.0 #maximum of vertical angle range at which the projectile is shot [°]
+g = -9.81 #gravitational acceleration [m/s^2]
+V_0 = 67 #initial velocity of projectile when shot [m/s]
+ro = 1.225 #air density [kg/m^3]
+C_d = 2.0 #aerodynamic drag coefficient of projectile
+A = 0.000050 #cross-sectional area of the projectile [m^2]
+m = 0.035 #projectile mass [kg]
+dalfa = 5.0 #step in vertical angle range [°]
+dr = None #distance step, at which trajectory's points will be saved and compared to DEM [m], None = adjusted to DEM resolution (cell's size), any float/int value = customized distance step
+h_E = 1.6 #shooter eye height above DEM for viewshed [m]
+h_T = 1.7 #target height for viewshed [m]
+wall_height = 4.0 #obstacle/wall height (if obstacle option is used) [m]
+const = 1 #constant multipling the drag coefficient within wobble distance of an arrow
+A_p = 0.0 #average addition to cross-sectional area of an arrow within wobble distance [m^2]
+w_d = 40 #wobble distance - distance at which an arrow stops wobbling [m]
 
 
-# import DEM
-dem_ds = gdal.Open(dem_path)
-# vyber pasma
-dem_band = dem_ds.GetRasterBand(band_number)
-# pridelenie hodnot dem do array
-dem_array = dem_band.ReadAsArray()
-
-# vytvorenie array so suradnicami X, Y vsetkych buniek (vztiahnute k stredu buniek)
-dem_gt = dem_ds.GetGeoTransform()   #pole obsahujuce xorigin, yorigin, sirku a vysku pixela
-# dem_array_coor = np.zeros((dem_array.shape[0],dem_array.shape[1],2))
-# for i in range(0,dem_array.shape[0]):
-#     for j in range(0,dem_array.shape[1]):
-#         dem_array_coor[i][j][0] = dem_gt[0]+(j+1/2)*dem_gt[1]
-#         dem_array_coor[i][j][1] = dem_gt[3]+(i+1/2)*dem_gt[5]
-
-#VYPOCET SURADNIC KAZDEJ BUNKY ZATIAL NEPOTREBNY
-
-# Ziskanie najmensej vysky rastra
-if dem_band.GetMinimum() == None:   #niekedy ale nevyhodi hodnotu None
-    dem_band.ComputeStatistics(0)   #preto treba spustit tento prikaz na prepocet statistiky
-    min_height = dem_band.GetMinimum()  #a uz by malo ziskat ciselnu hodnotu
-else:
-    min_height = dem_band.GetMinimum()  #ale ak nevyhadzuje None, tak rovno sa prideli hodnota
+main(dem_path, point_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG, cumulative_throwshed,
+    h, V_0, C_d, A, m, h_E, h_T, wall_height, const, A_p, w_d, line_layer_path=None,
+    viewshed_file='viewshed', buffer_file='buffer', band_number=1, int_compare=1, keep_point_crs=1, alfa_min=-90,
+    alfa_max=90, g=-9.81, ro=1.225, dalfa=5, dr=None)
 
 
-# import bodovej vrstvy
-point_ds = ogr.Open(point_layer_path, 0) #1 = editing, 0 = read only. Datasource
-# bodova vrstva
-point_layer = point_ds.GetLayer()
-# ziskanie poctu bodov vo vrstve
-point_count = point_layer.GetFeatureCount()
 
 
-# ak nahodou su krajne hodnoty mimo dovoleny interval, tak sa stopne skript
-if min_azimuth <= -360.0 or min_azimuth >= 360.0 or max_azimuth > 360.0 or max_azimuth == 0.0:
-    print("Zle nastavene hodnoty rozsahu azimutu.")
-    exit()
-# v pripade, ze je minimalny azimut vacsi ako maximalny, prepocita sa minimalny azimut na zaporny
-if min_azimuth > max_azimuth:
-    min_azimuth = min_azimuth - 360.0
-# ak nahodou rozsah azimutov presahuje kruh (co je problem potom pri vytvarani bodov a polygonu z nich), tak sa stopne skript
-if (max_azimuth - min_azimuth) > 360.0:
-    print("Zle nastavene hodnoty rozsahu azimutu.")
-    exit()
+
+
+
+
+
+
+
+
+
+
+
 
 #######################################################################
 ## VYPOCET DMP NA ZAKLADE VOLBY POUZITIA HRADIEB V RASTRI
@@ -126,7 +142,7 @@ elif use_line == 1:
     buffer_outlayer = buffer_outds.CreateLayer(buffer_file + "_temp", srs)
     buffer_feature = ogr.Feature(buffer_outlayer.GetLayerDefn())
 
-    buffer_dist = dr/2+np.sqrt(dem_gt[1]**2+dem_gt[5]**2)/2 #sirka buffera - krok dr + uhlopriecka bunky rastra s DMR
+    buffer_dist = dr/2 + (dem_gt[1]**2+dem_gt[5]**2)**(1/2)/2 - (dr/2)/(dem_gt[1]**2+dem_gt[5]**2)**(1/2)%1 #sirka buffera z kroku dr a uhlopriecky bunky rastra s DMR
     # cyklus citajuci vsetky linie z liniovej vrstvy
     for line_number in range(0,line_count):
         # ziskanie konkretnej linie
@@ -171,9 +187,8 @@ elif use_line == 1:
     buffer_ds = buffer_outds = buffer_outlayer = buffer_feature = None
 
     # vymazanie .shp a .tif vrstvy s bufferom
-    buffer_driver = ogr.GetDriverByName("ESRI Shapefile")
-    buffer_driver.DeleteDataSource(throwshed_output_folder + "\\" + buffer_file + "_temp.shp")
-    os.remove(throwshed_output_folder + "\\" + buffer_file + "_temp.tif")
+    for format in [file.split('.')[1] for file in os.listdir(throwshed_output_folder) if file.split('.')[0] == buffer_file + "_temp"]:
+        os.remove(throwshed_output_folder + '\\' + buffer_file + "_temp." + format)
 else:
     print("Nespravne nastavena volba uvazovania s hradbami.")
     exit()
@@ -191,21 +206,15 @@ for point_number in range(0,point_count):
     X_coor_point = point_geom.GetX()
     Y_coor_point = point_geom.GetY()
     
-    # zistenie vysky bunky, na ktorej sa nachadza bod
-    dem_cell_column = round(abs((X_coor_point - (dem_gt[0]+dem_gt[1]/2))/dem_gt[1]))
-    dem_cell_row = round(abs((Y_coor_point - (dem_gt[3]+dem_gt[5]/2))/dem_gt[5]))
+    # zistenie vysky bunky, na ktorej sa nachadza bod, zatial len metoda najblizsieho suseda
+    dem_cell_column = round(np.abs((X_coor_point - (dem_gt[0]+dem_gt[1]/2))/dem_gt[1]))
+    dem_cell_row = round(np.abs((Y_coor_point - (dem_gt[3]+dem_gt[5]/2))/dem_gt[5]))
     dem_cell_height = dem_array[dem_cell_row][dem_cell_column]
 
 
     # VYPOCET TRAJEKTORIE PROJEKTILU (x,y,y_r)
-    # kontrola, ci su hodnoty uhla vystrelu spravne definovane
-    if alfa_max < alfa_min:
-        print("Minimalny uhol vystrelu ma vacsiu hodnotu ako maximalny. Opravit.")
-        exit()
     #Vytvorenie listu so vsetkymi hodnotami uhla vystrelu, ktore sa pouziju v cykle
-    alfa_arange = np.arange(alfa_min, alfa_max, dalfa, dtype = np.float32) #arange() umoznuje vytvorit zoznam hodnot aj s krokom typu float (range to nedokaze)
-    alfa_list = alfa_arange.tolist() #transformacia typu np.ndarray na list, aby sa dal pouzit append()
-    alfa_list.append(alfa_max)   #pridelenie aj poslednej hranicnej hodnoty (inak by bola posledna hodnota o cosi mensia ako maximalny uhol vystrelu)
+    alfa_list = np.arange(np.radians(alfa_min),np.radians(alfa_max+dalfa),np.radians(dalfa))
 
     y_r = []    #buduca matica s vyskami projektilu kazdych dr metrov (hodnoty v riadku vedla seba) pod kazdym uhlom vystrelu (niekolko riadkov pod sebou)
     #cyklenie sa vsetkymi hodnotami alfa
@@ -222,32 +231,25 @@ for point_number in range(0,point_count):
         y_r1 = []    #bude obsahovat vysku kazdych dr metrov (iba jeden riadok)
 
         #zlozky pociatocnej rychlosti v smeroch x a y
-        V_x = V*math.cos(alfa/180*math.pi)
-        V_y = V*math.sin(alfa/180*math.pi)
+        V_x = V*np.cos(alfa)
+        V_y = V*np.sin(alfa)
 
         #zlozky pociatocneho dragu v smeroch x a y
-        d_x = d*math.cos(alfa/180*math.pi)
-        d_y = d*math.sin(alfa/180*math.pi)
+        d_x = d*np.cos(alfa)
+        d_y = d*np.sin(alfa)
 
         #kroky v x a y
         dX = V_x*dt+1/2*d_x*dt**2
         dY = V_y*dt+1/2*(d_y+g)*dt**2
 
-        i = 0
         while True:
-            i += 1
             #suradnice
-            x = x + [x[-1] + dX]
-            y = y + [y[-1] + dY]
+            x.append(x[-1] + dX)
+            y.append(y[-1] + dY)
 
-            #posledna hodnota bude v najmensej vyske celeho rastra, nizsie uz netreba prepocitavat, cyklus sa skonci
-            if y[i] < min_height:
-                y[i] = min_height
-                x[i] = x[i-1] + (y[i-1]-min_height)/math.tan(abs(alfa)/180*math.pi)
-                #mala sanca ze krok radialnej vzdialenosti bude presiahnuty, preto pridelenie vysky sipu aj v tomto malo pravdepodobnom bode
-                if x[-1] > r:
-                    y_r1.append(((x[-1]-r)*(y[-2]-y[-1]))/(x[-1]-x[-2])+y[-1]) #vyska sipu vo vzdialenosti r
-                    r += dr
+            #when the height is finally less than the minimal DEM height, last value of recorded trajectory is set to that value
+            if y[-1] < min_height:
+                y_r1.append(min_height)
                 break
 
             #v kazdom nasobku nastaveneho skoku radialnej vzialenosti sa vypocita vyska sipu
@@ -256,41 +258,31 @@ for point_number in range(0,point_count):
                 r += dr
 
             #novy uhol
-            alfa = math.atan(dY/dX)/math.pi*180
+            alfa = np.arctan(dY/dX)
             
             #nova rychlost
-            V = math.sqrt((dX/dt)**2+(dY/dt)**2)
+            V = ((dX/dt)**2+(dY/dt)**2)**(1/2)
             
             #novy drag
-            if math.sqrt(x[-1]**2+(y[-1]-dem_cell_height)**2) < 40:
+            if (x[-1]**2+(y[-1]-dem_cell_height)**2)**(1/2) < w_d:
                 d = -ro*V**2*C_d*const*(A+A_p)/(2*m)
             else:
                 d = -ro*V**2*C_d*A/(2*m)    #presny vztah
             #d = -C_d/1000*V**2    #priblizny vztah, pre sip postacuje
             
             #zlozky pociatocneho dragu v smeroch x a y
-            d_x = d*math.cos(alfa/180*math.pi)
-            d_y = d*math.sin(alfa/180*math.pi)
+            d_x = d*np.cos(alfa)
+            d_y = d*np.sin(alfa)
             #zlozky rychlosti v smeroch x a y
-            V_x = V_x + d_x*dt
-            V_y = V_y + (d_y+g)*dt
+            V_x += d_x*dt
+            V_y += (d_y+g)*dt
             #kroky v x a y
             dX = V_x*dt+1/2*d_x*dt**2
             dY = V_y*dt+1/2*(d_y+g)*dt**2
 
-        y_r = y_r+[y_r1]
+            del x[0], y[0]  # only two last values are utilized
 
-        # print(x[-1])
-        # print(y[-1])
-
-        # print(y_r)
-
-        # # vykreslenie
-        # plt.plot(x, y, 'r')
-        # plt.xlabel("vzdialenosť [m]")
-        # plt.ylabel("výška [m]")
-        # plt.gca().set_aspect('equal', adjustable='box')
-        # plt.show()
+        y_r.append(y_r1)
 
 
     # definicia vektorov, do ktorych sa budu ukladat suradnice najvzdialenejsich bodov jednotlivych azimutov
@@ -298,9 +290,7 @@ for point_number in range(0,point_count):
     Y_coor_point_polygon = []
 
     #Vytvorenie listu so vsetkymi hodnotami azimutov, ktore sa pouziju v cykle
-    azimuth_arange = np.arange(min_azimuth, max_azimuth, dazimuth, dtype = np.float32) #arange() umoznuje vytvorit zoznam hodnot aj s krokom typu float (range to nedokaze)
-    azimuth_list = azimuth_arange.tolist() #transformacia typu np.ndarray na list, aby sa dal pouzit append()
-    azimuth_list.append(max_azimuth)   #pridelenie aj poslednej hranicnej hodnoty (inak by bola posledna hodnota o cosi mensia ako maximalny azimut)
+    azimuth_list = np.arange(min_azimuth, max_azimuth + dazimuth, dazimuth)
 
     # Otacame pod azimutom (cyklus) a porovnavame hodnoty z y_r s DMR
     for Azimuth in azimuth_list:
@@ -313,19 +303,19 @@ for point_number in range(0,point_count):
             while True:
                 r += dr
                 #vypocet suradnic so vzdialenostou dr-nasobku a pod Azimutom
-                X_coor_compare_point = X_coor_point + r*math.sin(Azimuth/180*math.pi)
-                Y_coor_compare_point = Y_coor_point + r*math.cos(Azimuth/180*math.pi)
+                X_coor_compare_point = X_coor_point + r*np.sin(Azimuth)
+                Y_coor_compare_point = Y_coor_point + r*np.cos(Azimuth)
 
                 # Interpolacia DMR v porovnavanom bode
                 if int_compare == 0:
                     #interpolacia DMR v bode porovnania (nearest neighbour)
-                    dem_int_cell_column = round(abs((X_coor_compare_point - (dem_gt[0]+dem_gt[1]/2))/dem_gt[1]))
-                    dem_int_cell_row = round(abs((Y_coor_compare_point - (dem_gt[3]+dem_gt[5]/2))/dem_gt[5]))
+                    dem_int_cell_column = round(np.abs((X_coor_compare_point - (dem_gt[0]+dem_gt[1]/2))/dem_gt[1]))
+                    dem_int_cell_row = round(np.abs((Y_coor_compare_point - (dem_gt[3]+dem_gt[5]/2))/dem_gt[5]))
                     dem_int_point_height = dem_array[dem_int_cell_row][dem_int_cell_column]
                 elif int_compare == 1:
                     #interpolacia DMR v bode porovnania (linear)
-                    dem_int_cell_column = np.floor(abs((X_coor_compare_point - (dem_gt[0]+dem_gt[1]/2))/dem_gt[1])).astype(np.int32) #najblizsii nizsi stlpec v array od bodu
-                    dem_int_cell_row = np.floor(abs((Y_coor_compare_point - (dem_gt[3]+dem_gt[5]/2))/dem_gt[5])).astype(np.int32)    #najblizsii nizsi riadok v array od bodu
+                    dem_int_cell_column = np.floor(np.abs((X_coor_compare_point - (dem_gt[0]+dem_gt[1]/2))/dem_gt[1])).astype(np.int32) #najblizsii nizsi stlpec v array od bodu, X coor of the left column in set of four cells
+                    dem_int_cell_row = np.floor(np.abs((Y_coor_compare_point - (dem_gt[3]+dem_gt[5]/2))/dem_gt[5])).astype(np.int32)    #najblizsii nizsi riadok v array od bodu, Y coor of the upper row in set of four cells
                     X_coor_cell_1 = dem_gt[0] + dem_gt[1]/2 + dem_int_cell_column*dem_gt[1] #X suradnica stredov lavych buniek
                     # X_coor_cell_2 = dem_gt[0] + dem_gt[1]/2 + (dem_int_cell_column+1)*dem_gt[1] #X suradnica stredov pravych buniek
                     Y_coor_cell_1 = dem_gt[3] + dem_gt[5]/2 + (dem_int_cell_row+1)*dem_gt[5] #Y suradnica stredov dolnych buniek
@@ -334,9 +324,9 @@ for point_number in range(0,point_count):
                     H_2 = dem_array[dem_int_cell_row][dem_int_cell_column+1]  #H pravej hornej bunky
                     H_3 = dem_array[dem_int_cell_row+1][dem_int_cell_column]  #H lavej dolnej bunky
                     H_4 = dem_array[dem_int_cell_row+1][dem_int_cell_column+1]  #H pravej dolnej bunky
-                    H_int_1 = ((X_coor_compare_point-X_coor_cell_1)*(H_4-H_3))/(abs(dem_gt[1])) + H_3   #Interpolovana vyska na dolnej linii
-                    H_int_2 = ((X_coor_compare_point-X_coor_cell_1)*(H_2-H_1))/(abs(dem_gt[1])) + H_1   #Interpolovana vyska na hornej linii
-                    dem_int_point_height = ((Y_coor_compare_point-Y_coor_cell_1)*(H_int_2-H_int_1))/(abs(dem_gt[5])) + H_int_1   #Interpolovana vyska medzi dolnou a hornou liniou
+                    H_int_1 = ((X_coor_compare_point-X_coor_cell_1)*(H_4-H_3))/(np.abs(dem_gt[1])) + H_3   #Interpolovana vyska na dolnej linii
+                    H_int_2 = ((X_coor_compare_point-X_coor_cell_1)*(H_2-H_1))/(np.abs(dem_gt[1])) + H_1   #Interpolovana vyska na hornej linii
+                    dem_int_point_height = ((Y_coor_compare_point-Y_coor_cell_1)*(H_int_2-H_int_1))/(np.abs(dem_gt[5])) + H_int_1   #Interpolovana vyska medzi dolnou a hornou liniou
                 else:
                     print("Hodnota int_compare neznama.")
                     exit()
@@ -345,28 +335,13 @@ for point_number in range(0,point_count):
                 if dem_int_point_height >= y_r[i][j]:
                     S.append(r)
                     break
-
-                #ak by sa stalo ze aj po poslednej vyske sipu je stale sip nad DMR, zapise sa posledna mozna vzdialenost (k problemu moze dojst zrejme pri nastaveni velkeho kroku dr)
-                if j == len(y_r[i])-1:
-                    S.append(r)
-                    break
-                    
                 j += 1
+
             #nakoniec sa vyhlada maximalna vzdialenost spomedzi vsetkych pocitanych pre kazdy uhol vystrelu a zapisu sa suradnice najvzdialenejseho bodu pre dany azimut
             if i == range(0,len(alfa_list))[-1]:
-                max_r, idx = max((max_r, idx) for (idx, max_r) in enumerate(S))
-                X_coor_point_polygon.append(X_coor_point + max_r*math.sin(Azimuth/180*math.pi))
-                Y_coor_point_polygon.append(Y_coor_point + max_r*math.cos(Azimuth/180*math.pi))
-
-
-    #vypis suradnic
-    # print(X_coor_point_polygon)
-    # print(Y_coor_point_polygon)
-
-    #vykreslenie
-    # plt.plot(X_coor_point_polygon, Y_coor_point_polygon, 'ro')
-    # plt.show()
-
+                max_r = max(S)
+                X_coor_point_polygon.append(X_coor_point + max_r*np.sin(Azimuth))
+                Y_coor_point_polygon.append(Y_coor_point + max_r*np.cos(Azimuth))
 
     #######################################################################
     ## VYTVORENIE VYSTUPNEJ VRSTVY
@@ -374,15 +349,15 @@ for point_number in range(0,point_count):
     # vytvorenie novej geometrie
     throwshed_ring = ogr.Geometry(ogr.wkbLinearRing)
     # ak je azimut v celom rozsahu (throwshed pre cele okolie), pridaju sa len body dopadu
-    if min_azimuth == 0.0 and max_azimuth == 360.0:
-        for i in range(0,len(X_coor_point_polygon)):
-            throwshed_ring.AddPoint(X_coor_point_polygon[i], Y_coor_point_polygon[i])
+    if max_azimuth - min_azimuth == np.pi*2:
+        for X, Y in zip(X_coor_point_polygon,Y_coor_point_polygon):
+            throwshed_ring.AddPoint(X, Y)
     # ak je azimut iba v konkretnom rozsahu a nepocita sa throwshed pre cele okolie, treba pridat aj bod vystrelu, aby sa to spravne vykreslilo        
     else:
         throwshed_ring.AddPoint(X_coor_point, Y_coor_point)   #prvy bod (vystrelu) totozny s poslednym
         # pridanie zvysnych bodov do geometrie
-        for i in range(0,len(X_coor_point_polygon)):
-            throwshed_ring.AddPoint(X_coor_point_polygon[i], Y_coor_point_polygon[i])
+        for X, Y in zip(X_coor_point_polygon,Y_coor_point_polygon):
+            throwshed_ring.AddPoint(X, Y)
         throwshed_ring.AddPoint(X_coor_point, Y_coor_point)   #posledny bod (vystrelu) totozny s prvym
 
     # vytvorenie polygonu
@@ -396,13 +371,9 @@ for point_number in range(0,point_count):
     # definicia referencneho systemu
     srs = osr.SpatialReference()
     if keep_point_crs == 0:
-        srs.ImportFromEPSG(EPSG)    
-    elif keep_point_crs == 1:
-        srs = point_layer.GetSpatialRef()
+        srs.ImportFromEPSG(EPSG)
     else:
-        print("Zle nastavena hodnota keep_point_crs.")
-        throwshed_outds = None
-        exit()
+        srs = point_layer.GetSpatialRef()
     throwshed_outlayer = throwshed_outds.CreateLayer(throwshed_file + "_temp", srs)
     
     # pridanie polygonu do feature a jeho ulozenie do vystupnej vrstvy
@@ -411,7 +382,7 @@ for point_number in range(0,point_count):
     throwshed_outlayer.CreateFeature(throwshed_feature)
 
     # Vypocet maximalnej vzdialenosti pre viewshed z geoudajov vstupneho rastra a bodu vystrelu
-    max_distance_4 =  [X_coor_point-dem_gt[0], dem_gt[3]-Y_coor_point, dem_gt[0]+dem_gt[1]*len(dem_array[1])-X_coor_point, Y_coor_point-(dem_gt[3]+dem_gt[5]*len(dem_array))]
+    max_distance_4 =  (max([X_coor_point-dem_gt[0], dem_gt[0]+dem_gt[1]*len(dem_array[1])-X_coor_point])**2 + max([dem_gt[3]-Y_coor_point, Y_coor_point-(dem_gt[3]+dem_gt[5]*len(dem_array))])**2)**(1/2)
     
     # VYUZITIE VIEWSHED-U
     if use_viewshed == 1:
@@ -424,8 +395,8 @@ for point_number in range(0,point_count):
         # orezanie rastra viditelnosti throwshedom
         gdal.Warp(throwshed_output_folder + "\\" + throwshed_file + ".tif", viewshed_ds, cutlineDSName = throwshed_output_folder + "\\" + throwshed_file + "_temp" + ".shp", cropToCutline = False, dstNodata = 0)
         # vymazanie polygonu .shp s throwshedom a rastra .tif s viewshedom, tiez DMP sa vymaze
-        driver = ogr.GetDriverByName("ESRI Shapefile")
-        driver.DeleteDataSource(throwshed_output_folder + "\\" + throwshed_file + "_temp.shp")
+        for format in [file.split('.')[1] for file in os.listdir(throwshed_output_folder) if file.split('.')[0] == throwshed_file + "_temp"]:
+            os.remove(throwshed_output_folder + '\\' + throwshed_file +"_temp." + format)
         viewshed_ds = None
         os.remove(throwshed_output_folder + "\\" + viewshed_file + ".tif")
     # NEVYUZITIE VIEWSHED-U
@@ -441,12 +412,8 @@ for point_number in range(0,point_count):
         # nakoniec novovytvorena vrstva, datasource aj prvok treba dat rovne None, lebo inak sa nezobrazi spravne v QGISe
         throwshed_outds = throwshed_ds = throwshed_outlayer = throwshed_feature = None
         # vektorova podoba sa vymaze a zostane len rastrova, tiez DMP sa vymaze
-        driver = ogr.GetDriverByName("ESRI Shapefile")
-        driver.DeleteDataSource(throwshed_output_folder + "\\" + throwshed_file + "_temp.shp")
-    else:
-        throwshed_outds = throwshed_outlayer = throwshed_feature = None
-        print("Zadana nespravna hodnota pri nastaveni pouzitia viditelnosti.")
-        exit()
+        for format in [file.split('.')[1] for file in os.listdir(throwshed_output_folder) if file.split('.')[0] == throwshed_file + "_temp"]:
+            os.remove(throwshed_output_folder + '\\' + throwshed_file +"_temp." + format)
 
     
     # SCITAVANIE RASTROV THROWSHED-OV VIACERYCH BODOV
