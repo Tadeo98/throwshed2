@@ -10,102 +10,282 @@ from osgeo import gdal, ogr, osr
 #######################################################################
 ## FUNCTIONS
 
-def main(dem_path, point_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG, cumulative_throwshed,
-         h, V_0, C_d, A, m, h_E, h_T, wall_height, const, A_p, w_d, line_layer_path=None,
-         viewshed_file='viewshed', buffer_file='buffer', band_number=1, interpolation=1, keep_crs=1, alfa_min=-90,
-         alfa_max=90, g=-9.81, ro=1.225, dalfa=5, dr=None):
-    """Just main function that triggers everything else"""
-    dem_array, dem_band, dem_gt = get_raster_from_file(dem_path,band_number)
-    dem_height = get_min_height(dem_band)
-    point_layer, point_feat_count = get_layer_from_file(point_layer_path)
+def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG,
+         cumulative_throwshed, initial_height, initial_velocity, drag_coefficient, cross_sectional_area, mass,
+         eyes_height, target_height, wall_height, constant, area_addition, wobble_distance, band_number=1,
+         interpolation=1, alpha_min=-90, alpha_max=90, gravitational_acceleration=-9.81, air_density=1.225, dalpha=5,
+         trajectory_segment_width=None):
+    """Just main function with controls, global variables settings and triggers to other functions"""
+    # making sure the vertical angle has correct range
+    if alpha_max < alpha_min:
+        print("Minimal vertical shooting angle higher than maximal.")
+        exit()
+    # Global variables
+    global SRS, DP, PLP, LLP, TOF, TF, UV, CV, BN, INT, BF, VF, TSW, AL, DB, DA, DGT, DMINH, DMAXH, IH, IV, DC, CSA, M,\
+        CONST, AA, WD, GA, AD, EH, TH
+    # CRS and other variable definition
+    SRS = osr.SpatialReference()
+    SRS.ImportFromEPSG(EPSG)
+    TOF, TF, UV, CV, BN, INT, VF, IH, IV, DC, CSA, M, CONST, AA, WD, GA, AD, EH, TH = throwshed_output_folder,\
+        throwshed_file, use_viewshed, cumulative_throwshed, band_number, interpolation, 'viewshed', initial_height, \
+        initial_velocity, drag_coefficient, cross_sectional_area, mass, constant, area_addition, wobble_distance, \
+        gravitational_acceleration, air_density, eyes_height, target_height
+    # get DEM data and assign them as global
+    DB, DA, DGT = get_raster_from_file(dem_path)
+    # assign trajectory segment width
+    TSW = np.min(np.abs([DGT[1],DGT[5]])) if trajectory_segment_width == None else trajectory_segment_width
+    # obtain list of point geometries
+    point_geom_list = get_geom_list_from_file(point_layer_path)
+    # burn lines as obstacles into DEM, creating new DEM (Digital terrain model -> Digital surface model)
+    if line_layer_path:
+        burn_obstacles(line_layer_path, wall_height)
+    # get minimum and maximum DEM height
+    DMINH, DMAXH = get_min_max_height()
+    # obtain list of vertical angles
+    AL = np.arange(np.radians(alpha_min), np.radians(alpha_max + dalpha), np.radians(dalpha))
+    # cycle calculating throwshed for each point
+    for point_geom in point_geom_list:
+        # compute throwshed for 1 point
+        throwshed(point_geom)
 
 
-def get_raster_from_file(file_path,band_number):
+
+def get_raster_from_file(file_path):
     """Get DEM array and geotransformation data"""
     # import DEM datasource
     dem_ds = gdal.Open(file_path)
     # select band
-    dem_band = dem_ds.GetRasterBand(band_number)
+    dem_band = dem_ds.GetRasterBand(BN)
     # DEM cell values into array
     dem_array = dem_band.ReadAsArray()
     # transformation data describing DEM
     dem_gt = dem_ds.GetGeoTransform()
+    dem_ds = None
     return dem_array, dem_band, dem_gt
 
-def get_min_height(dem_band):
-    """Get minimal DEM height"""
+def get_min_max_height():
+    """Get minimum and maximum DEM height"""
     # sometimes the function returns None, therefore statistics need to be calculated first
-    if dem_band.GetMinimum() == None:
-        dem_band.ComputeStatistics(0)
-    return dem_band.GetMinimum()
+    if DB.GetMinimum() == None or DB.GetMaximum() == None:
+        DB.ComputeStatistics(0)
+    return DB.GetMinimum(), DB.GetMaximum()
 
-def get_layer_from_file(file_path):
-    """Get layer from vector layer file"""
+def get_geom_list_from_file(file_path):
+    """Get features' geometries from vector layer file"""
     # import vector layer datasource
     layer_ds = ogr.Open(file_path, 0)  # 1 = editing, 0 = read only. Datasource
     # vector layer
     layer = layer_ds.GetLayer()
-    # get feature count
-    feat_count = layer.GetFeatureCount()
-    return layer, feat_count
+    # list of geometries
+    geom_list = [layer.GetFeature(number).GetGeometryRef() for number in range(0, layer.GetFeatureCount())]
+    layer_ds = None
+    return geom_list
 
-    # Making sure the azimuth minumum and maximum are within the range of one circle (0;2pi) and their conversion to rads
-    min_azimuth, max_azimuth, dazimuth = min_azimuth / 360 % 1 * (2 * np.pi), max_azimuth / 360 % 1 * (
-                2 * np.pi), np.radians(dazimuth)
-    # in case of min azimuth being greater or equal than max azimuth, 2pi is added to max azimuth
-    if min_azimuth >= max_azimuth:
-        max_azimuth += np.pi * 2
-        # kontrola, ci su hodnoty uhla vystrelu spravne definovane
-        if alfa_max < alfa_min:
-            print("Minimalny uhol vystrelu ma vacsiu hodnotu ako maximalny. Opravit.")
-            exit()
+def burn_obstacles(line_layer_path, wall_height):
+    """Lines that resemble walls/obstacles are burnt into DEM"""
+    # get list of line geometries
+    line_geom_list = get_geom_list_from_file(line_layer_path)
+    # calculate minimal buffer distance, at which the obstacle will always be respected
+    buffer_dist = TSW / 2 + (DGT[1] ** 2 + DGT[5] ** 2) ** (1 / 2) / 2 - (TSW / 2) / (
+                DGT[1] ** 2 + DGT[5] ** 2) ** (1 / 2) % 1
+    # 1st buffer is created and in case of multiple lines the cycle is utilized to create and unite buffers
+    buffer_geom = line_geom_list[0].Buffer(buffer_dist, 1)
+    if len(line_geom_list) > 1:
+        for line_geom in line_geom_list[1:]:
+            buffer_geom = buffer_geom.Union(line_geom.Buffer(buffer_dist, 1))
+    # buffer file temporary name
+    BFT = "buffer_temp"
+    # create layer for buffer
+    buffer_outlayer = create_outlayer(BFT, buffer_geom)
+    # create buffer datasource
+    buffer_ds, buffer_band = create_raster_file(BFT, 0)
+    # Buffer polygon is rasterized
+    gdal.RasterizeLayer(buffer_ds, [1], buffer_outlayer, burn_values=[wall_height])
+    # Sum of initial dem and buffer rasters
+    buffer_array = buffer_band.ReadAsArray()
+    global DA, DB
+    DA = np.add(DA, buffer_array)
+    buffer_ds = buffer_outlayer = None
+    # create new raster datasource for DEM (DSM)
+    dem_ds, DB = create_raster_file(BFT, 1)
+    dem_ds = None
+    # delete all temporary files
+    remove_temp_files(BFT)
+
+
+def create_outlayer(layer_name, geom):
+    """Creates file for output layer, which will contain new features"""
+    # create driver and output data source
+    outds = ogr.GetDriverByName("ESRI Shapefile").CreateDataSource(TOF + "\\" + layer_name + ".shp")
+    # create output layer
+    outlayer = outds.CreateLayer(layer_name, SRS)
+    # feature definition and setting
+    feature = ogr.Feature(outlayer.GetLayerDefn())
+    feature.SetGeometry(geom)
+    # assign feature into output layer
+    outlayer.CreateFeature(feature)
+    outds = None
+    return outlayer
+
+def create_raster_file(raster_name, method):
+    """Creates raster file. Method 0 returns empty datasource and band. Method 1 does the same and also writes array"""
+    # create driver and output data source
+    outds = gdal.GetDriverByName('GTiff').Create(TOF + "\\" + raster_name + ".tif", xsize=DA.shape[1],
+                                                 ysize=DA.shape[0], bands=1, eType=gdal.GDT_Float32)
+    # assign geotransformation, projection, band and nodata settings
+    outds.SetGeoTransform(DGT)
+    outds.SetProjection(SRS.ExportToWkt())
+    raster_band = outds.GetRasterBand(1)
+    raster_band.SetNoDataValue(-9999)
+    if method == 1:
+        raster_band.WriteArray(DA)
+    return outds, raster_band
+
+def remove_temp_files(temp_file):
+    """Deletes all temporary files with assigned name"""
+    for format in [file.split('.')[1] for file in os.listdir(TOF) if file.split('.')[0] == temp_file]:
+        os.remove(TOF + '\\' + temp_file + "." + format)
+
+def throwshed(point_geom):
+    """Calculates throwshed for 1 point"""
+    # get X and Y of shooter's place
+    X_coor_point = point_geom.GetX()
+    Y_coor_point = point_geom.GetY()
+    # get interpolated height of point from DEM
+    global point_height
+    point_height = int_function(X_coor_point, Y_coor_point)
+    # generate set of trajectories for vertical angle range with basic step
+    trajectory_base_set()
+    # CONTINUE HERE
+
+def int_function(X, Y):
+    """Interpolates height of point from DEM cells"""
+    # nearest neighbour
+    if INT == 0:
+        column = round(np.abs((X_coor_point - (DGT[0] + DGT[1] / 2)) / DGT[1]))
+        row = round(np.abs((Y_coor_point - (DGT[3] + DGT[5] / 2)) / DGT[5]))
+        return DA[row][column]
+    # bilinear
+    else:
+        left_column = int(np.abs((X - (DGT[0] + DGT[1] / 2)) / DGT[1])) # index of left column in set of four cells
+        upper_row = int(np.abs((Y - (DGT[3] + DGT[5] / 2)) / DGT[5])) # index of the upper row in set of four cells
+        X_left_cell = DGT[0] + DGT[1] / 2 + left_column * DGT[1] # X coordinate of left cells
+        Y_lower_cell = DGT[3] + DGT[5] / 2 + (upper_row + 1) * DGT[5] # Y coordinate of lower cells
+        H_1 = DA[upper_row][left_column]  # height of upper left cell
+        H_2 = DA[upper_row][left_column + 1]  # height of upper right cell
+        H_3 = DA[upper_row + 1][left_column]  # height of lower left cell
+        H_4 = DA[upper_row + 1][left_column + 1]  # height of lower right cell
+        H_int_1 = ((X - X_left_cell) * (H_4 - H_3)) / (np.abs(DGT[1])) + H_3  # interpolated height among lower cells
+        H_int_2 = ((X - X_left_cell) * (H_2 - H_1)) / (np.abs(DGT[1])) + H_1  # interpolated height among upper cells
+        return ((Y - Y_lower_cell) * (H_int_2 - H_int_1)) / (np.abs(DGT[5])) + H_int_1
+
+def trajectory_base_set():
+    """Generate set of trajectories for vertical angle range with basic step"""
+    # trajectory dictionary, that will contain all trajectories, their initial shooting angle etc.
+    global TS
+    # dictionary's key is vertical angle value and the value (first one, in brackets) is list of heights in one trajectory
+    TS = {alpha: [generate_trajectory(alpha)] for alpha in AL}
+
+def generate_trajectory(alpha):
+    """Generates trajectory from input parameters"""
+    # initial drag
+    d = -AD * IV ** 2 * DC * CONST * (CSA + AA) / (2 * M)
+    # radial distance step
+    r = TSW
+    # initial projectile velocity
+    V = IV
+    # first/shooter point coordinates
+    x = [0.0]
+    y = [IH + point_height]
+    # list of all trajectory points' heights
+    height_list = []
+    # velocity x and y elements
+    V_x = V * np.cos(alpha)
+    V_y = V * np.sin(alpha)
+    # drag x and y elements
+    d_x = d * np.cos(alpha)
+    d_y = d * np.sin(alpha)
+    # time step is set to value approximate to half of cell size
+    dt = TSW / V / 2
+    # x and y steps
+    dX = V_x * dt + 1 / 2 * d_x * dt ** 2
+    dY = V_y * dt + 1 / 2 * (d_y + GA) * dt ** 2
+    # cycle calculating every new trajectory point one by one
+    while True:
+        # coords (only 2 last are kept)
+        x.append(x[-1] + dX)
+        y.append(y[-1] + dY)
+        # when the height is finally less than the minimal DEM height, cycle breaks
+        if y[-1] < DMINH:
+            break
+        # projectile height is interpolated every TSW-fold distance
+        if x[-1] > r:
+            height_list.append(((x[-1] - r) * (y[-2] - y[-1])) / (x[-1] - x[-2]) + y[-1])
+            r += TSW
+        # new vertical angle
+        alpha = np.arctan(dY / dX)
+        # new velocity
+        V = ((dX / dt) ** 2 + (dY / dt) ** 2) ** (1 / 2)
+        # new drag
+        if (x[-1] ** 2 + (y[-1] - point_height) ** 2) ** (1 / 2) < WD:
+            d = -AD * V ** 2 * DC * CONST * (CSA + AA) / (2 * M)
+        else:
+            d = -AD * V ** 2 * DC * CSA / (2 * M)
+        # new drag x and y elements
+        d_x = d * np.cos(alpha)
+        d_y = d * np.sin(alpha)
+        # new velocity x and y elements
+        V_x += d_x * dt
+        V_y += (d_y + GA) * dt
+        # time step is recalculated to value approximate to half of cell size
+        dt = TSW / V / 2
+        # new x and y steps
+        dX = V_x * dt + 1 / 2 * d_x * dt ** 2
+        dY = V_y * dt + 1 / 2 * (d_y + GA) * dt ** 2
+        # only two last values are utilized
+        del x[0], y[0]
+    return height_list
 
 #######################################################################
 ## PATHS
 dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\dem\dmr.tif" #path to DEM
 point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\point\points1.shp"   #path to point layer
-line_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\line\lines1.shp" #path to line layer, if obstacles are not to be used, set to None
+line_layer_path = None#r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\line\lines1.shp" #path to line layer, if obstacles are not to be used, set to None
 throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\throwshed"  #path to folder, where the file will be saved
 throwshed_file = r"throwshedtest1"   #name of output throwshed file
-viewshed_file = r"viewshed" #name of temporary file containing viewshed
-buffer_file = r"buffer"   #name of temporary file containing buffer
 
 ## SETTINGS
 use_viewshed = 1 #utilization of viewshed, that will clip throwshed, No = 0, Yes = 1
 band_number = 1 #selected band from DEM, default = 1
 interpolation = 0 #interpolation of DEM to calculate altitude of shooting point or compare points within the DEM-to-trajectory comparison function, Nearest neighbour = 0, Bilinear = 1
-keep_crs = 0 #use CRS from input DEM for throwshed layer, Yes = 1, No = 0 (requires setting of EPSG variable)
 cumulative_throwshed = 1 #Calculate cumulative throwshed? No = 0, Yes = 1 (Apropriate with more than 1 shooting places)
-EPSG = 8353 #EPSG code for CRS of output throwshed layer
+EPSG = 8353 #EPSG code for CRS of output throwshed layer and other temporary results, must be same as DEM's EPSG
 
 ## VARIABLES
-h = 1.7 #initial height of projectile above DEM when shot [m]
-alfa_min = 0.0 #minimum of vertical angle range at which the projectile is shot [°]
-alfa_max = 45.0 #maximum of vertical angle range at which the projectile is shot [°]
-g = -9.81 #gravitational acceleration [m/s^2]
-V_0 = 67 #initial velocity of projectile when shot [m/s]
-ro = 1.225 #air density [kg/m^3]
-C_d = 2.0 #aerodynamic drag coefficient of projectile
-A = 0.000050 #cross-sectional area of the projectile [m^2]
-m = 0.035 #projectile mass [kg]
-dalfa = 5.0 #step in vertical angle range [°]
-dr = None #distance step, at which trajectory's points will be saved and compared to DEM [m], None = adjusted to DEM resolution (cell's size), any float/int value = customized distance step
-h_E = 1.6 #shooter eye height above DEM for viewshed [m]
-h_T = 1.7 #target height for viewshed [m]
+initial_height = 1.7 #initial height of projectile above DEM when shot [m]
+alpha_min = 0.0 #minimum of vertical angle range at which the projectile is shot [°]
+alpha_max = 45.0 #maximum of vertical angle range at which the projectile is shot [°]
+gravitational_acceleration = -9.81 #gravitational acceleration [m/s^2]
+initial_velocity = 67 #initial velocity of projectile when shot [m/s]
+air_density = 1.225 #air density [kg/m^3]
+drag_coefficient = 2.0 #aerodynamic drag coefficient of projectile
+cross_sectional_area = 0.000050 #cross-sectional area of the projectile [m^2]
+mass = 0.035 #projectile mass [kg]
+dalpha = 5.0 #step in vertical angle range [°]
+trajectory_segment_width = None #distance step, at which trajectory's points will be saved and compared to DEM [m], None = adjusted to DEM resolution (cell's size), any float/int value = customized distance step
+eyes_height = 1.6 #shooter eye height above DEM for viewshed [m]
+target_height = 1.7 #target height for viewshed [m]
 wall_height = 4.0 #obstacle/wall height (if obstacle option is used) [m]
-const = 1 #constant multipling the drag coefficient within wobble distance of an arrow
-A_p = 0.0 #average addition to cross-sectional area of an arrow within wobble distance [m^2]
-w_d = 40 #wobble distance - distance at which an arrow stops wobbling [m]
+constant = 1 #constant multipling the drag coefficient within wobble distance of an arrow
+area_addition = 0.0 #average addition to cross-sectional area of an arrow within wobble distance [m^2]
+wobble_distance = 40 #wobble distance - distance at which an arrow stops wobbling [m]
 
 
-main(dem_path, point_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG, cumulative_throwshed,
-    h, V_0, C_d, A, m, h_E, h_T, wall_height, const, A_p, w_d, line_layer_path=None,
-    viewshed_file='viewshed', buffer_file='buffer', band_number=1, int_compare=1, keep_point_crs=1, alfa_min=-90,
-    alfa_max=90, g=-9.81, ro=1.225, dalfa=5, dr=None)
-
-
-
-
+main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG,
+         cumulative_throwshed, initial_height, initial_velocity, drag_coefficient, cross_sectional_area, mass,
+         eyes_height, target_height, wall_height, constant, area_addition, wobble_distance, band_number=1,
+         interpolation=1, alpha_min=-90, alpha_max=90, gravitational_acceleration=-9.81, air_density=1.225, dalpha=5,
+         trajectory_segment_width=None)
 
 
 
@@ -118,171 +298,10 @@ main(dem_path, point_layer_path, throwshed_output_folder, throwshed_file, use_vi
 
 
 
-#######################################################################
-## VYPOCET DMP NA ZAKLADE VOLBY POUZITIA HRADIEB V RASTRI
-# Vypocet na zaklade volby pouzitia hradieb v rastri
-if use_line == 0:
-    # nepouziju sa hradby, len sa pripocita vyska ochodze k vyske vystreleneho sipu, resp. pripocita sa vyska 0 m ak stoji obranca/utocnik priamo na terene
-    h = h+feet_height
-# pouzije sa vektorova vrstva s hradbami
-elif use_line == 1:
-    # zatvorime pasmo aby sme don mohli dat nove (ako DMP), pretoze este sa pasmo pouziva pri tvorbe viewshedu
-    dem_band = None
-    # import liniovej vrstvy
-    line_ds = ogr.Open(line_layer_path, 0) #1 = editing, 0 = read only. Datasource
-    # liniova vrstva
-    line_layer = line_ds.GetLayer()
-    # ziskanie poctu linii vo vrstve
-    line_count = line_layer.GetFeatureCount()
-
-    # nastavenia polygonovej vrstvy, ktora bude obsahovat buffer
-    shpdriver = ogr.GetDriverByName("ESRI Shapefile")
-    buffer_outds = shpdriver.CreateDataSource(throwshed_output_folder + "\\" + buffer_file + "_temp.shp")
-    srs = line_layer.GetSpatialRef()
-    buffer_outlayer = buffer_outds.CreateLayer(buffer_file + "_temp", srs)
-    buffer_feature = ogr.Feature(buffer_outlayer.GetLayerDefn())
-
-    buffer_dist = dr/2 + (dem_gt[1]**2+dem_gt[5]**2)**(1/2)/2 - (dr/2)/(dem_gt[1]**2+dem_gt[5]**2)**(1/2)%1 #sirka buffera z kroku dr a uhlopriecky bunky rastra s DMR
-    # cyklus citajuci vsetky linie z liniovej vrstvy
-    for line_number in range(0,line_count):
-        # ziskanie konkretnej linie
-        line_feature = line_layer.GetFeature(line_number)
-        # ziskanie geometrie konktretnej linie
-        line_geom = line_feature.GetGeometryRef()
-        # tvorba bufferov
-        if line_number == 0:
-            # ak je iba jedna linia, zapise sa sama
-            buffer_geom = line_geom.Buffer(buffer_dist,1) # 1 - pocet bodov tvoriacich 90° obluk okolo koncovych bodov
-        else:
-            # ak je viacero linii/bufferov, tak sa pridruzia spolu cez Union do jedneho prvku (aby sa buffre neprekryvali, akoby Dissolve)
-            buffer_geom = buffer_geom.Union(line_geom.Buffer(buffer_dist,1))
-
-    # zapis spojenych bufferov do vrstvy
-    buffer_feature.SetGeometry(buffer_geom)
-    buffer_outlayer.CreateFeature(buffer_feature)
-
-    # nastavenia rastra s bufferom
-    buffer_ds = gdal.GetDriverByName('GTiff').Create(throwshed_output_folder + "\\" + buffer_file + "_temp.tif", xsize = dem_array.shape[1], ysize = dem_array.shape[0], bands = 1, eType = gdal.GDT_Float32)
-    buffer_ds.SetGeoTransform(dem_gt)
-    buffer_ds.SetProjection(srs.ExportToWkt())   #SS bude nastaveny ako bol aj pri polygonovej vrstve
-    buffer_band = buffer_ds.GetRasterBand(1)
-    buffer_band.SetNoDataValue(0)
-    # buffer polygon sa rasterizuje, [1] - priradenie hodnot do pasma 1, burn_values=[1] - priradenie hodnot buniek = 1
-    gdal.RasterizeLayer(buffer_ds, [1], buffer_outlayer, burn_values=[wall_height])
-
-    # suma dvoch rastrov
-    buffer_array = buffer_band.ReadAsArray()
-    dem_array = np.add(dem_array,buffer_array)
-
-    # vytvorenie a nastavenie rastra DMP
-    dmp_driver = gdal.GetDriverByName("GTiff")
-    dmp_outds = dmp_driver.Create(throwshed_output_folder + "\\" + buffer_file + "_dmp_temp.tif", xsize = dem_array.shape[1], ysize = dem_array.shape[0], bands = 1, eType = gdal.GDT_Float32)
-    dmp_outds.SetGeoTransform(dem_gt)
-    dmp_outds.SetProjection(srs.ExportToWkt())
-    dem_band = dmp_outds.GetRasterBand(1) #sice dem_band, no spravne by malo byt dmp_band
-    dem_band.WriteArray(dem_array)
-    dem_band.SetNoDataValue(-9999)
-
-    # zavretie vsetkeho okrem rastra
-    buffer_ds = buffer_outds = buffer_outlayer = buffer_feature = None
-
-    # vymazanie .shp a .tif vrstvy s bufferom
-    for format in [file.split('.')[1] for file in os.listdir(throwshed_output_folder) if file.split('.')[0] == buffer_file + "_temp"]:
-        os.remove(throwshed_output_folder + '\\' + buffer_file + "_temp." + format)
-else:
-    print("Nespravne nastavena volba uvazovania s hradbami.")
-    exit()
-
-#######################################################################
-## VYPOCET THROWSHEDU Z KAZDEHO BODU
-
-point_number_once = 0
-# cyklus v ktorom sa vytvori raster throwshedu pre kazdy bod bodovej vrstvy
-for point_number in range(0,point_count):
-    # ziskanie konkretneho bodu
-    point_feature = point_layer.GetFeature(point_number)
-    # ziskanie geometrie bodu, X a Y suradnice (odpovedajuce smeru a orientacii osi v QGISe)
-    point_geom = point_feature.GetGeometryRef()
-    X_coor_point = point_geom.GetX()
-    Y_coor_point = point_geom.GetY()
-    
-    # zistenie vysky bunky, na ktorej sa nachadza bod, zatial len metoda najblizsieho suseda
-    dem_cell_column = round(np.abs((X_coor_point - (dem_gt[0]+dem_gt[1]/2))/dem_gt[1]))
-    dem_cell_row = round(np.abs((Y_coor_point - (dem_gt[3]+dem_gt[5]/2))/dem_gt[5]))
-    dem_cell_height = dem_array[dem_cell_row][dem_cell_column]
 
 
-    # VYPOCET TRAJEKTORIE PROJEKTILU (x,y,y_r)
-    #Vytvorenie listu so vsetkymi hodnotami uhla vystrelu, ktore sa pouziju v cykle
-    alfa_list = np.arange(np.radians(alfa_min),np.radians(alfa_max+dalfa),np.radians(dalfa))
 
-    y_r = []    #buduca matica s vyskami projektilu kazdych dr metrov (hodnoty v riadku vedla seba) pod kazdym uhlom vystrelu (niekolko riadkov pod sebou)
-    #cyklenie sa vsetkymi hodnotami alfa
-    for alfa in alfa_list:
-        # Pociatocny drag
-        d = -ro*V_0**2*C_d*const*(A+A_p)/(2*m)    #presny vztah
-        # d = -C_d/1000*V_0**2    #priblizny vztah, pre sip postacuje
 
-        r = dr   #radialna vzdialenost (interpolacny skok)
-        V = V_0 #rychlost
-        x = [0.0]   #suradnica x v 2D grafe
-        # y = [h] #suradnica y v 2D grafe, iba vyska nad povrchom
-        y = [h+dem_cell_height] #suradnica y v 2D grafe
-        y_r1 = []    #bude obsahovat vysku kazdych dr metrov (iba jeden riadok)
-
-        #zlozky pociatocnej rychlosti v smeroch x a y
-        V_x = V*np.cos(alfa)
-        V_y = V*np.sin(alfa)
-
-        #zlozky pociatocneho dragu v smeroch x a y
-        d_x = d*np.cos(alfa)
-        d_y = d*np.sin(alfa)
-
-        #kroky v x a y
-        dX = V_x*dt+1/2*d_x*dt**2
-        dY = V_y*dt+1/2*(d_y+g)*dt**2
-
-        while True:
-            #suradnice
-            x.append(x[-1] + dX)
-            y.append(y[-1] + dY)
-
-            #when the height is finally less than the minimal DEM height, last value of recorded trajectory is set to that value
-            if y[-1] < min_height:
-                y_r1.append(min_height)
-                break
-
-            #v kazdom nasobku nastaveneho skoku radialnej vzialenosti sa vypocita vyska sipu
-            if x[-1] > r:
-                y_r1.append(((x[-1]-r)*(y[-2]-y[-1]))/(x[-1]-x[-2])+y[-1]) #vyska sipu vo vzdialenosti r
-                r += dr
-
-            #novy uhol
-            alfa = np.arctan(dY/dX)
-            
-            #nova rychlost
-            V = ((dX/dt)**2+(dY/dt)**2)**(1/2)
-            
-            #novy drag
-            if (x[-1]**2+(y[-1]-dem_cell_height)**2)**(1/2) < w_d:
-                d = -ro*V**2*C_d*const*(A+A_p)/(2*m)
-            else:
-                d = -ro*V**2*C_d*A/(2*m)    #presny vztah
-            #d = -C_d/1000*V**2    #priblizny vztah, pre sip postacuje
-            
-            #zlozky pociatocneho dragu v smeroch x a y
-            d_x = d*np.cos(alfa)
-            d_y = d*np.sin(alfa)
-            #zlozky rychlosti v smeroch x a y
-            V_x += d_x*dt
-            V_y += (d_y+g)*dt
-            #kroky v x a y
-            dX = V_x*dt+1/2*d_x*dt**2
-            dY = V_y*dt+1/2*(d_y+g)*dt**2
-
-            del x[0], y[0]  # only two last values are utilized
-
-        y_r.append(y_r1)
 
 
     # definicia vektorov, do ktorych sa budu ukladat suradnice najvzdialenejsich bodov jednotlivych azimutov
