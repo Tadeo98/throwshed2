@@ -1,7 +1,7 @@
 #######################################################################
 ## THROWSHED ##
 #######################################################################
-
+import decimal
 import os
 import numpy as np
 from osgeo import gdal, ogr, osr
@@ -46,7 +46,7 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
     # cycle calculating throwshed for each point
     for point_geom in point_geom_list:
         # compute throwshed for 1 point
-        throwshed(point_geom)
+        throwshed()
 
 
 
@@ -146,24 +146,25 @@ def remove_temp_files(temp_file):
     for format in [file.split('.')[1] for file in os.listdir(TOF) if file.split('.')[0] == temp_file]:
         os.remove(TOF + '\\' + temp_file + "." + format)
 
-def throwshed(point_geom):
+def throwshed():
     """Calculates throwshed for 1 point"""
     # get X and Y of shooter's place
-    X_coor_point = point_geom.GetX()
-    Y_coor_point = point_geom.GetY()
+    # X_coor_point = point_geom.GetX()
+    # Y_coor_point = point_geom.GetY()
     # get interpolated height of point from DEM
     global point_height
-    point_height = int_function(X_coor_point, Y_coor_point)
+    point_height = 150#int_function(X_coor_point, Y_coor_point)
     # generate set of trajectories for vertical angle range with basic step
-    trajectory_base_set()
-    # CONTINUE HERE
+    trajectory_simple_set()
+    # insert trajectories between those from simple set, to ensure throwshed's edge accuracy
+    trajectory_initial_set()
 
 def int_function(X, Y):
     """Interpolates height of point from DEM cells"""
     # nearest neighbour
     if INT == 0:
-        column = round(np.abs((X_coor_point - (DGT[0] + DGT[1] / 2)) / DGT[1]))
-        row = round(np.abs((Y_coor_point - (DGT[3] + DGT[5] / 2)) / DGT[5]))
+        column = round(np.abs((X - (DGT[0] + DGT[1] / 2)) / DGT[1]))
+        row = round(np.abs((Y - (DGT[3] + DGT[5] / 2)) / DGT[5]))
         return DA[row][column]
     # bilinear
     else:
@@ -179,26 +180,21 @@ def int_function(X, Y):
         H_int_2 = ((X - X_left_cell) * (H_2 - H_1)) / (np.abs(DGT[1])) + H_1  # interpolated height among upper cells
         return ((Y - Y_lower_cell) * (H_int_2 - H_int_1)) / (np.abs(DGT[5])) + H_int_1
 
-def trajectory_base_set():
+def trajectory_simple_set():
     """Generate set of trajectories for vertical angle range with basic step"""
     # trajectory dictionary, that will contain all trajectories, their initial shooting angle etc.
     global TS
-    # dictionary's key is vertical angle value and the value (first one, in brackets) is list of heights in one trajectory
-    TS = {alpha: [generate_trajectory(alpha)] for alpha in AL}
+    # element in list begins with alpha value and continues with list of x and y coords lists in one trajectory
+    TS = [[alpha, generate_trajectory(alpha)] for alpha in AL]
 
 def generate_trajectory(alpha):
     """Generates trajectory from input parameters"""
     # initial drag
     d = -AD * IV ** 2 * DC * CONST * (CSA + AA) / (2 * M)
-    # radial distance step
-    r = TSW
     # initial projectile velocity
     V = IV
-    # first/shooter point coordinates
-    x = [0.0]
-    y = [IH + point_height]
-    # list of all trajectory points' heights
-    height_list = []
+    # list of all trajectory points' coordinates
+    points = [[0.0], [IH + point_height]]
     # velocity x and y elements
     V_x = V * np.cos(alpha)
     V_y = V * np.sin(alpha)
@@ -213,21 +209,19 @@ def generate_trajectory(alpha):
     # cycle calculating every new trajectory point one by one
     while True:
         # coords (only 2 last are kept)
-        x.append(x[-1] + dX)
-        y.append(y[-1] + dY)
-        # when the height is finally less than the minimal DEM height, cycle breaks
-        if y[-1] < DMINH:
+        points[0].append(points[0][-1] + dX)
+        points[1].append(points[1][-1] + dY)
+        # when last height is less than minimal DEM height, cycle breaks and last values are reinterpolated into minimal DEM height (to prevent errors in extreme situations of further functions)
+        if points[1][-1] < DMINH:
+            points[1][-1] = DMINH
+            points[0][-1] = points[0][-2] + (points[1][-1] - points[1][-2])/np.tan(alpha)
             break
-        # projectile height is interpolated every TSW-fold distance
-        if x[-1] > r:
-            height_list.append(((x[-1] - r) * (y[-2] - y[-1])) / (x[-1] - x[-2]) + y[-1])
-            r += TSW
         # new vertical angle
         alpha = np.arctan(dY / dX)
         # new velocity
         V = ((dX / dt) ** 2 + (dY / dt) ** 2) ** (1 / 2)
         # new drag
-        if (x[-1] ** 2 + (y[-1] - point_height) ** 2) ** (1 / 2) < WD:
+        if (points[0][-1] ** 2 + (points[1][-1] - point_height) ** 2) ** (1 / 2) < WD:
             d = -AD * V ** 2 * DC * CONST * (CSA + AA) / (2 * M)
         else:
             d = -AD * V ** 2 * DC * CSA / (2 * M)
@@ -242,15 +236,124 @@ def generate_trajectory(alpha):
         # new x and y steps
         dX = V_x * dt + 1 / 2 * d_x * dt ** 2
         dY = V_y * dt + 1 / 2 * (d_y + GA) * dt ** 2
-        # only two last values are utilized
-        del x[0], y[0]
-    return height_list
+    return points
+
+def trajectory_initial_set():
+    """Calculates and inserts trajectories between those in simple set, to make it denser and to ensure throwshed's
+    edge accuracy"""
+    global TS
+
+
+
+    # new trajectory end x, first ones are random, just to make sure the cycle does not stop immediately
+    ntex = [max(TS, key=lambda x: x[1][0][-1])[1][0][-1]*2,max(TS, key=lambda x: x[1][0][-1])[1][0][-1]*3]
+    # cycle that finds the furthest possible trajectory for minimal DEM height respecting the edge accuracy, adds some new trajectories
+    while round(np.abs(ntex[0] - ntex[1])/TSW):
+        mdti = TS.index((max(TS, key=lambda x: x[1][0][-1])))
+        for new_alpha in [(np.abs(TS[mdti+1][0] - TS[mdti][0])) / 2 + TS[mdti][0], (np.abs(TS[mdti][0] - TS[mdti-1][0])) / 2 + TS[mdti-1][0]]:
+            TS.append([new_alpha, generate_trajectory(new_alpha)])
+        TS.sort(key=lambda x: x[0])
+        ntex = [max(TS, key=lambda x: x[1][0][-1])[1][0][-1], ntex[0]]
+
+    global temp_xyp, iti
+    temp_xyp = [[],[]]
+    iii = 0
+
+
+    # cycle that inserts trajectories between furthest trajectory at minimal DEM height and maximal DEM height
+    XPP = max(TS, key=lambda x: x[1][0][-1])[1][0][-1]
+    # initial trajectory index
+    iti = TS.index((max(TS, key=lambda x: x[1][0][-1])))
+
+
+
+    try:
+        while True:
+            if TS[iti][0] == AL[-1]:
+                break
+            x1_rev, y1_rev = list(reversed(TS[iti][1][0])), list(reversed(TS[iti][1][1]))
+            x2_rev, y2_rev = list(reversed(TS[iti + 1][1][0])), list(reversed(TS[iti + 1][1][1]))
+            #plot_trajectory()
+            #print('trajectory No', iti,'last X', TS[iti][1][0][-1])
+            XP = YP = None
+            for i1 in range(1, len(TS[iti][1][0])):
+                for i2 in range(1, len(TS[iti+1][1][0])):
+                    if y2_rev[i2] > y1_rev[i1] and x1_rev[i1] < x2_rev[i2-1]:
+                        for i3, i4 in zip([0,1,0],[0,0,-1]):
+                            #print(len(x1_rev)-1, len(x2_rev)-1, i1-1+i3, i1+i3, i2-1+i4, i2+i4)
+                            XP, YP = find_intersection(x1_rev[i1-1+i3], y1_rev[i1-1+i3], x1_rev[i1+i3], y1_rev[i1+i3],
+                                                       x2_rev[i2-1+i4], y2_rev[i2-1+i4], x2_rev[i2+i4], y2_rev[i2+i4])
+                            #print(XP, x1_rev[i1-1+i3], x1_rev[i1+i3], x2_rev[i2-1+i4], x2_rev[i2+i4])
+                            if x1_rev[i1-1+i3] >= XP >= x1_rev[i1+i3] and x2_rev[i2-1+i4] >= XP >= x2_rev[i2+i4]:
+                                print('second', iti, i1, i2, i3, i4)
+                                break
+                            XP = YP = False
+                    if XP:
+                        break
+                if XP:
+                    break
+            if round(np.abs(XPP - XP)/TSW):
+                print(XPP, XP, YP, iti)
+                temp_xyp[0].append(XP)
+                temp_xyp[1].append(YP)
+                new_alpha = np.abs(TS[iti][0] - TS[iti + 1][0]) / 2 + TS[iti][0]
+                print(np.degrees(TS[iti][0]), np.degrees(TS[iti+1][0]), np.degrees(new_alpha))
+
+                # if iii == 3:
+                #     plot_trajectory()
+                #     exit()
+                TS.append([new_alpha, generate_trajectory(new_alpha)])
+                TS.sort(key=lambda x: x[0])
+                if TS.index((max(TS, key=lambda x: x[1][0][-1]))) == iti+1:
+                    iti += 1
+            else:
+                if YP >= DMAXH:
+                    break
+                iti += 1
+                XPP = XP
+            iii += 1
+    except IndexError:
+        print('blbo')
+        print(XP, len(TS[iti][1][0]), i1 - 1 + i3, i1 + i3, i2 - 1 + i4, i2 + i4)
+def find_intersection(x1, y1, x2, y2, x3, y3, x4, y4):
+    """Finds intersection of 2 lines and returns its X and Y coordinates"""
+    x1, y1, x2, y2, x3, y3, x4, y4 = decimal.Decimal(x1), decimal.Decimal(y1), decimal.Decimal(x2), \
+        decimal.Decimal(y2), decimal.Decimal(x3), decimal.Decimal(y3), decimal.Decimal(x4), decimal.Decimal(y4)
+    XP = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / ((x1 - x2) * (y3 - y4) - (y1 - y2) *
+        (x3 - x4))
+    YP = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / ((x1 - x2) * (y3 - y4) - (y1 - y2) *
+        (x3 - x4))
+    return float(XP), float(YP)
+
+def plot_trajectory():
+    import matplotlib.pyplot as plt  # na vykreslenie grafov
+    plt.figure(figsize=(32, 18))
+    for i in (iti, iti+1):
+        # plotting the points
+        #plt.plot(TS[i][1][0], TS[i][1][1], markersize=5, linewidth=1, label=TS[i][0]/np.pi*180)
+        plt.plot(TS[i][1][0], TS[i][1][1], '.-', markersize=4, linewidth=1, label=TS[i][0]/np.pi*180)
+    plt.plot(temp_xyp[0], temp_xyp[1], 'r.', markersize=2)
+
+    # ohranicenie, popis osi a nastavenie rovnakej mierky v smere oboch osi
+    plt.xlim(326.2, 326.6)
+    plt.ylim(105, 105.5)
+    plt.xlabel("vzdialenosť [m]")
+    plt.ylabel("výška [m]")
+    plt.gca().set_aspect('equal', adjustable='box')
+
+    # function to show the plot
+    plt.legend()
+    plt.savefig('filename.png', dpi=900)
+    plt.show()
+
+
+
 
 #######################################################################
 ## PATHS
 dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\dem\dmr.tif" #path to DEM
 point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\point\points1.shp"   #path to point layer
-line_layer_path = None#r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\line\lines1.shp" #path to line layer, if obstacles are not to be used, set to None
+line_layer_path = None #r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\line\lines1.shp" #path to line layer, if obstacles are not to be used, set to None
 throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\throwshed"  #path to folder, where the file will be saved
 throwshed_file = r"throwshedtest1"   #name of output throwshed file
 
@@ -281,11 +384,59 @@ area_addition = 0.0 #average addition to cross-sectional area of an arrow within
 wobble_distance = 40 #wobble distance - distance at which an arrow stops wobbling [m]
 
 
-main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG,
+"""main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG,
          cumulative_throwshed, initial_height, initial_velocity, drag_coefficient, cross_sectional_area, mass,
          eyes_height, target_height, wall_height, constant, area_addition, wobble_distance, band_number=1,
          interpolation=1, alpha_min=-90, alpha_max=90, gravitational_acceleration=-9.81, air_density=1.225, dalpha=5,
-         trajectory_segment_width=None)
+         trajectory_segment_width=None)"""
+
+global IH, IV, DC, CSA, M, CONST, AA, WD, GA, AD, point_height, TSW, DMINH, DMAXH, AL
+IH, IV, DC, CSA, M, CONST, AA, WD, GA, AD, point_height, TSW, DMINH, DMAXH = initial_height, initial_velocity, drag_coefficient, \
+        cross_sectional_area, mass, constant, area_addition, wobble_distance, gravitational_acceleration, air_density, \
+                                                               150, 1, 100.0, 200.0
+AL = np.arange(np.radians(-90), np.radians(90 + dalpha), np.radians(dalpha))
+throwshed()
+
+#plot_trajectory()
+#print(np.degrees(TS[iti-1][0]),np.degrees(TS[iti][0]),np.degrees(TS[iti+1][0]),np.degrees(TS[iti+2][0]),np.degrees(TS[-1][0]))
+
+for x1, y1, x2, y2 in zip(TS[iti][1][0],TS[iti][1][1],TS[iti+1][1][0],TS[iti+1][1][1]):
+    print(x1,y1,x2,y2)
+    if x2 > x1:
+        print('yes')
+
+
+# import matplotlib.pyplot as plt  # na vykreslenie grafov
+# plt.figure(figsize=(32, 18))
+# x1 = np.multiply(TS[iti][1][0],1000000000)
+# y1 = np.multiply(TS[iti][1][1],1000000000)
+# x2 = np.multiply(TS[iti+1][1][0],1000000000)
+# y2 = np.multiply(TS[iti+1][1][1],1000000000)
+# # plotting the points
+# plt.plot(x1, y1, '.-', markersize=4, linewidth=1, label='iti')
+# plt.plot(x2, y2, '.-', markersize=4, linewidth=1, label='iti+1')
+#
+# # ohranicenie, popis osi a nastavenie rovnakej mierky v smere oboch osi
+# xlim1 = (round(326.3099787361053,9)-0.000000005)*1000000000
+# xlim2 = (round(326.3099787361053,9)+0.000000005)*1000000000
+# ylim1 = (round(105.41666740186065,9)-0.000000005)*1000000000
+# ylim2 = (round(105.41666740186065,9)+0.000000005)*1000000000
+# plt.xlim(xlim1, xlim2)
+# plt.ylim(ylim1, ylim2)
+# plt.xlabel("vzdialenosť [m]")
+# plt.ylabel("výška [m]")
+# plt.gca().set_aspect('equal', adjustable='box')
+#
+# # function to show the plot
+# plt.legend()
+# plt.savefig('filename.png', dpi=900)
+# plt.show()
+
+print(find_intersection(326.03612131613994,105.83548252333263,326.30997873207264,105.41666740802577,
+                        326.30997873610530,105.41666740186065,326.03612132016600,105.83548251716319))
+
+print(np.degrees(np.arctan((10541666740802577-10583548252333263)/(32630997873207264-32603612131613994))))
+print(np.degrees(np.arctan((10541666740186065-10583548251716319)/(32630997873610530-32603612132016600))))
 
 
 
@@ -293,17 +444,7 @@ main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throw
 
 
 
-
-
-
-
-
-
-
-
-
-
-
+"""
     # definicia vektorov, do ktorych sa budu ukladat suradnice najvzdialenejsich bodov jednotlivych azimutov
     X_coor_point_polygon = []
     Y_coor_point_polygon = []
@@ -486,3 +627,4 @@ main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throw
 if use_line == 1:
     dmp_outds = dem_band = None
     os.remove(throwshed_output_folder + "\\" + buffer_file + "_dmp_temp.tif")
+"""
