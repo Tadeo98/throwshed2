@@ -12,7 +12,7 @@ from osgeo import gdal, ogr, osr
 def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG,
          cumulative_throwshed, initial_height, initial_velocity, drag_coefficient, cross_sectional_area, mass,
          eyes_height, target_height, wall_height, constant, area_addition, wobble_distance, band_number=1,
-         interpolation=1, alpha_min=-90, alpha_max=90, gravitational_acceleration=-9.81, air_density=1.225, dalpha=5,
+         interpolation=1, alpha_min=-90.0, alpha_max=90.0, gravitational_acceleration=-9.81, air_density=1.225, dalpha=5,
          trajectory_segment_width=None):
     """Just main function with controls, global variables settings and triggers to other functions"""
     # making sure the vertical angle has correct range
@@ -20,8 +20,8 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
         print("Minimal vertical shooting angle higher than maximal.")
         exit()
     # Global variables
-    global SRS, DP, PLP, LLP, TOF, TF, UV, CV, BN, INT, BF, VF, TSW, AL, DB, DA, DGT, DMINH, DMAXH, IH, IV, DC, CSA, M,\
-        CONST, AA, WD, GA, AD, EH, TH
+    global SRS, DP, PLP, LLP, TOF, TF, UV, CV, BN, INT, BF, VF, TSW, AL, DDS, DB, DA, DGT, DMINH, DMAXH, IH, IV, DC, \
+        CSA, M,CONST, AA, WD, GA, AD, EH, TH
     # CRS and other variable definition
     SRS = osr.SpatialReference()
     SRS.ImportFromEPSG(EPSG)
@@ -29,12 +29,12 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
         throwshed_file, use_viewshed, cumulative_throwshed, band_number, interpolation, 'viewshed', initial_height, \
         initial_velocity, drag_coefficient, cross_sectional_area, mass, constant, area_addition, wobble_distance, \
         gravitational_acceleration, air_density, eyes_height, target_height
-    # get DEM data and assign them as global
-    DB, DA, DGT = get_raster_from_file(dem_path)
+    # get DEM data and assign them as global (and referencing datasource)
+    DDS, DB, DA, DGT = get_raster_from_file(dem_path)
     # assign trajectory segment width
     TSW = np.min(np.abs([DGT[1],DGT[5]])) if trajectory_segment_width == None else trajectory_segment_width
-    # obtain list of point geometries
-    point_geom_list = get_geom_list_from_file(point_layer_path)
+    # obtain list of point geometries (and all referencing data it's dependent on)
+    point_layer_ds, point_layer, point_feature_list, point_geom_list = get_geom_list_from_file(point_layer_path)
     # burn lines as obstacles into DEM, creating new DEM (Digital terrain model -> Digital surface model)
     if line_layer_path:
         burn_obstacles(line_layer_path, wall_height)
@@ -42,10 +42,19 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
     DMINH, DMAXH = get_min_max_height()
     # obtain list of vertical angles
     AL = np.arange(np.radians(alpha_min), np.radians(alpha_max + dalpha), np.radians(dalpha))
+    AL[-1] = np.radians(alpha_max) # in case of last angle being larger than 90°
     # cycle calculating throwshed for each point
     for point_geom in point_geom_list:
         # compute throwshed for 1 point
-        throwshed()
+        throwshed(point_geom)
+        plot_trajectory()
+        exit()
+        """
+        if len(envelope[0][0]) == 1:
+            print('len bod')
+        else:
+            print('obalka')
+        """
 
 
 
@@ -59,8 +68,7 @@ def get_raster_from_file(file_path):
     dem_array = dem_band.ReadAsArray()
     # transformation data describing DEM
     dem_gt = dem_ds.GetGeoTransform()
-    dem_ds = None
-    return dem_array, dem_band, dem_gt
+    return dem_ds, dem_band, dem_array, dem_gt
 
 def get_min_max_height():
     """Get minimum and maximum DEM height"""
@@ -75,10 +83,10 @@ def get_geom_list_from_file(file_path):
     layer_ds = ogr.Open(file_path, 0)  # 1 = editing, 0 = read only. Datasource
     # vector layer
     layer = layer_ds.GetLayer()
-    # list of geometries
-    geom_list = [layer.GetFeature(number).GetGeometryRef() for number in range(0, layer.GetFeatureCount())]
-    layer_ds = None
-    return geom_list
+    # list of features, then geometries
+    feature_list = [layer.GetFeature(number) for number in range(0, layer.GetFeatureCount())]
+    geom_list = [feature.GetGeometryRef() for feature in feature_list]
+    return layer_ds, layer, feature_list, geom_list
 
 def burn_obstacles(line_layer_path, wall_height):
     """Lines that resemble walls/obstacles are burnt into DEM"""
@@ -145,14 +153,14 @@ def remove_temp_files(temp_file):
     for format in [file.split('.')[1] for file in os.listdir(TOF) if file.split('.')[0] == temp_file]:
         os.remove(TOF + '\\' + temp_file + "." + format)
 
-def throwshed():
+def throwshed(point_geom):
     """Calculates throwshed for 1 point"""
     # get X and Y of shooter's place
-    # X_coor_point = point_geom.GetX()
-    # Y_coor_point = point_geom.GetY()
+    X_coor_point = point_geom.GetX()
+    Y_coor_point = point_geom.GetY()
     # get interpolated height of point from DEM
     global point_height
-    point_height = 0.0#int_function(X_coor_point, Y_coor_point)
+    point_height = int_function(X_coor_point, Y_coor_point)
     # generate set of trajectories for vertical angle range with basic step
     trajectory_simple_set()
     # insert trajectories between those from simple set, to ensure throwshed's edge accuracy
@@ -186,6 +194,7 @@ def trajectory_simple_set():
     # element in list begins with alpha value and continues with list of x and y coords lists in one trajectory
     TS = [[alpha, generate_trajectory(alpha)] for alpha in AL]
 
+
 def generate_trajectory(alpha):
     """Generates trajectory from input parameters"""
     # initial drag
@@ -211,9 +220,14 @@ def generate_trajectory(alpha):
         points[0].append(points[0][-1] + dX)
         points[1].append(points[1][-1] + dY)
         # when last height is less than minimal DEM height, cycle breaks and last values are reinterpolated into minimal DEM height (to prevent errors in extreme situations of further functions)
-        if points[1][-1] < DMINH:
-            points[1][-1] = DMINH
-            points[0][-1] = points[0][-2] + (points[1][-1] - points[1][-2])/np.tan(alpha)
+        if points[1][-1] <= DMINH:
+            # if the shooting point is on the cell with minimal height of DEM, there will be only 2 points for trajectories starting with angle <= 0 and these points can't be the same, so this is the only exception where last points of trajectories are not recalculated (interpolated) to minimal DEM height
+            if len(points[1]) == 2:
+                pass
+            # but normally the last segment passing the minimal DEM height is clipped by this height and the last point is interpolated to this height
+            else:
+                points[1][-1] = DMINH
+                points[0][-1] = points[0][-2] + (points[1][-1] - points[1][-2])/np.tan(alpha)
             break
         # new vertical angle
         alpha = np.arctan(dY / dX)
@@ -239,89 +253,131 @@ def generate_trajectory(alpha):
 
 def trajectory_initial_set():
     """Calculates and inserts trajectories between those in simple set, to make it denser and to ensure throwshed's
-    edge accuracy"""
+    edge accuracy. Calculates and returns trajectory envelope points list."""
     global TS
-
-    plot_trajectory()
-
-    # new trajectory end x, first ones are random, just to make sure the cycle does not stop immediately
-    ntex = [max(TS, key=lambda x: x[1][0][-1])[1][0][-1]*2,max(TS, key=lambda x: x[1][0][-1])[1][0][-1]*3]
-    # cycle that finds the furthest possible trajectory for minimal DEM height respecting the edge accuracy, adds some new trajectories
+    # new and previous trajectory end x, first ones are random, just to make sure the cycle does not stop immediately
+    ntex = [(max(TS, key=lambda x: x[1][0][-1])[1][0][-1]+TSW)*2,(max(TS, key=lambda x: x[1][0][-1])[1][0][-1]+TSW)*3]
+    # cycle that finds the furthest possible trajectory for minimal DEM height respecting the edge accuracy
     while round(np.abs(ntex[0] - ntex[1])/TSW):
+        #most distant trajectory index
         mdti = TS.index((max(TS, key=lambda x: x[1][0][-1])))
-        for new_alpha in [(np.abs(TS[mdti+1][0] - TS[mdti][0])) / 2 + TS[mdti][0], (np.abs(TS[mdti][0] - TS[mdti-1][0])) / 2 + TS[mdti-1][0]]:
+        # adds new trajectories before and after current furthest trajectory
+        if mdti != 0 and mdti != len(TS)-1:
+            for new_alpha in [(TS[mdti+1][0] - TS[mdti][0]) / 2 + TS[mdti][0], (TS[mdti][0] - TS[mdti-1][0]) / 2 + TS[mdti-1][0]]:
+                TS.append([new_alpha, generate_trajectory(new_alpha)])
+        # for furthest trajectory that is also the first or last one, only one trajectory is added accordingly
+        elif mdti == len(TS)-1:
+            new_alpha = (TS[mdti][0] - TS[mdti-1][0]) / 2 + TS[mdti-1][0]
             TS.append([new_alpha, generate_trajectory(new_alpha)])
+            mdti += 1 #this is just so that mdti gets higher like length of TS does (to cope with length of TS getting bigger, these 2 are compared in ntex)
+        elif mdti == 0:
+            new_alpha = (TS[mdti+1][0] - TS[mdti][0]) / 2 + TS[mdti][0]
+            TS.append([new_alpha, generate_trajectory(new_alpha)])
+        ntex = [max(TS[-1][1][0][-1],TS[-2][1][0][-1]) if mdti != 0 and mdti != len(TS)-1 else TS[-1][1][0][-1], ntex[0]]
         TS.sort(key=lambda x: x[0])
-        ntex = [max(TS, key=lambda x: x[1][0][-1])[1][0][-1], ntex[0]]
 
-    global temp_xyp, iti
-    temp_xyp = [[],[]]
-    iii = 0
+    # function ends after finding out the last trajectory is the one with furthest reach (rest of the code is not applicable) and returns just furthest point, otherwise envelope is set to empty list and trajectory set will get denser with following code
+    if mdti == len(TS)-1:
+        return [[TS[mdti][1][0][-1]], [TS[mdti][1][1][-1]]]
+    else:
+        # list for X,Y coordinates of points forming trajectory envelope
+        envelope = [[], []]
 
-
-    # cycle that inserts trajectories between furthest trajectory at minimal DEM height and maximal DEM height
-    XPP = max(TS, key=lambda x: x[1][0][-1])[1][0][-1]
-    # initial trajectory index
+    # initial trajectory index (starting will be the trajectory with furthest reach)
     iti = TS.index((max(TS, key=lambda x: x[1][0][-1])))
-
-
-
+    # cycle that inserts trajectories between furthest trajectory at minimal DEM height and maximal DEM height
     try:
         while True:
-            if TS[iti][0] == AL[-1]:
-                break
-            x1_rev, y1_rev = list(reversed(TS[iti][1][0])), list(reversed(TS[iti][1][1]))
-            x2_rev, y2_rev = list(reversed(TS[iti + 1][1][0])), list(reversed(TS[iti + 1][1][1]))
-            #plot_trajectory()
-            #print('trajectory No', iti,'last X', TS[iti][1][0][-1])
-            XP = YP = None
-            for i1 in range(1, len(TS[iti][1][0])):
-                for i2 in range(1, len(TS[iti+1][1][0])):
-                    if y2_rev[i2] > y1_rev[i1] and x1_rev[i1] < x2_rev[i2-1]:
-                        for i3, i4 in zip([0,1,0],[0,0,-1]):
-                            #print(len(x1_rev)-1, len(x2_rev)-1, i1-1+i3, i1+i3, i2-1+i4, i2+i4)
-                            XP, YP = find_intersection(x1_rev[i1-1+i3], y1_rev[i1-1+i3], x1_rev[i1+i3], y1_rev[i1+i3],
-                                                       x2_rev[i2-1+i4], y2_rev[i2-1+i4], x2_rev[i2+i4], y2_rev[i2+i4])
-                            #print(XP, x1_rev[i1-1+i3], x1_rev[i1+i3], x2_rev[i2-1+i4], x2_rev[i2+i4])
-                            if x1_rev[i1-1+i3] >= XP >= x1_rev[i1+i3] and x2_rev[i2-1+i4] >= XP >= x2_rev[i2+i4]:
-                                #print('second', iti, i1, i2, i3, i4)
-                                break
-                            XP = YP = False
-                    if XP:
-                        break
-                if XP:
-                    break
-            if round(np.abs(XPP - XP)/TSW):
-                #print(XPP, XP, YP, iti)
-                temp_xyp[0].append(XP)
-                temp_xyp[1].append(YP)
-                new_alpha = abs(TS[iti][0] - TS[iti + 1][0]) / 2 + TS[iti][0]
-                #print(np.degrees(TS[iti][0]), np.degrees(TS[iti+1][0]), np.degrees(new_alpha))
-
-                # if iii == 3:
-                #     plot_trajectory()
-                #     exit()
-                TS.append([new_alpha, generate_trajectory(new_alpha)])
-                TS.sort(key=lambda x: x[0])
-                if TS.index((max(TS, key=lambda x: x[1][0][-1]))) == iti+1:
-                    iti += 1
-            else:
-                if YP >= DMAXH:
-                    break
+            # generate new trajectory in between actual and following
+            new_alpha = abs(TS[iti][0] - TS[iti + 1][0]) / 2 + TS[iti][0]
+            TS.append([new_alpha, generate_trajectory(new_alpha)])
+            TS.sort(key=lambda x: x[0])
+            # in case of added trajectory having further reach than previously furthest trajectory (actual)
+            if TS.index((max(TS, key=lambda x: x[1][0][-1]))) == iti + 1:
                 iti += 1
-                XPP = XP
-            iii += 1
-    except IndexError:
-        print('blbo')
-        print(XP, len(TS[iti][1][0]), i1 - 1 + i3, i1 + i3, i2 - 1 + i4, i2 + i4)
-def find_intersection(x1, y1, x2, y2, x3, y3, x4, y4):
-    """Finds intersection of 2 lines and returns its X and Y coordinates"""
+                continue
+            # if the last trajectory incorporated in cycle is the last one from the net with shooting angle value of 90 degrees.
+            # This is because with 90 degrees trajectory left outer and inner intersections will be the same, which would lead to undesired behaviour
+            if TS[iti+2][0] == np.radians(90):
+                # if X coordinate of highest point in newly created trajectory is less than TSW, last possible area of the net was made dense enough
+                if not np.floor(TS[iti+1][1][0][TS[iti+1][1][1].index((max(TS[iti+1][1][1])))]/TSW):
+                    break
+                # if not, density will be accomplished with new iteration
+                else:
+                    continue
+            # get intersection of actual and following (newly created) trajectory (Right Outer Intersection)
+            XROI, YROI = intersection_of_trajectories(iti, iti+1)
+            # get intersection of following and 2. following trajectory (Left Outer Intersection)
+            XLOI, YLOI = intersection_of_trajectories(iti+1, iti+2)
+            # get intersection of actual and 2. following trajectory (Inner Intersection), first one is calculated, the rest will be reused from outer intersections
+            XII, YII = intersection_of_trajectories(iti, iti+2)
+
+            # coordinates of midpoint on line between outer intersections (Outer Midpoint)
+            XOM, YOM = (XROI + XLOI) / 2, (YROI + YLOI) / 2
+            # following trajectory reversed list (X and Y coords)
+            FTR = [list(reversed(TS[iti + 1][1][0])), list(reversed(TS[iti + 1][1][1]))]
+            # finds intersection of arc distance and particular segment on the arc
+            for i in range(len(FTR[0])-1):
+                XA, YA = calculate_intersection(XOM, YOM, XII, YII, FTR[0][i], FTR[1][i], FTR[0][i+1], FTR[1][i+1])
+                # checking if the intersection is really on the segment, if so, the distance of arc from inner intersection is calculated
+                if FTR[0][i] >= XA >= FTR[0][i+1] and FTR[1][i] <= YA <= FTR[1][i+1]:
+                    DAII = ((XA-XII)**2 + (YA-YII)**2)**(1/2)
+                    break
+            # controls - compare horizontal distance of intersections and distance of arc from inner intersection
+            if round(np.abs(XROI - XLOI)/TSW) and round(DAII/TSW):
+                continue
+            else:
+                # making the net denser stops at DEM's max height
+                if YROI >= DMAXH:
+                    break
+                # at least one of the conditions was met and the cycle can jump to next actual trajectory
+                iti += 2
+                # if the cycle comes to last trajectory, it breaks as there is no following trajectory
+                if TS[iti][0] == AL[-1]:
+                    break
+    except Exception as e:
+        print(e)
+
+def intersection_of_trajectories(t1i,t2i):
+    """Looks for intersection between two trajectories and returns its X and Y coordinates.
+    t1i and t2i are indexes of first and second trajectory between which the intersection is sought."""
+    # reversed lists of trajectories' coordinates as the algorithm starts from end points, TX1 = X coordinates of 1. trajectory
+    T1X, T1Y = list(reversed(TS[t1i][1][0])), list(reversed(TS[t1i][1][1]))
+    T2X, T2Y = list(reversed(TS[t2i][1][0])), list(reversed(TS[t2i][1][1]))
+    # X and Y coords of intersection (to be compared e.g. with XPI), i2s stands for radius around i2 (or index)
+    XI = YI = i2s = False
+    # following trajectory segment radius where the intersection will be sought
+    ftsr = [0, 1, -1, 2, -2]
+    # cycle that starts comparing coords of actual trajectory points from the end
+    for i1 in range(1, len(T1X)):
+        # cycle that starts comparing coords of following trajectory points from the end
+        for i2 in range(1, len(T2X)):
+            if T2Y[i2] > T1Y[i1] and T1X[i1] < T2X[i2 - 1]:
+                # when potentially intersecting segment of following trajectory is found, because of rare situations its 2 following and preceding segments have to be assessed
+                for i2s in ftsr:
+                    XI, YI = calculate_intersection(T1X[i1 - 1], T1Y[i1 - 1], T1X[i1], T1Y[i1],
+                                               T2X[i2 - 1 + i2s], T2Y[i2 - 1 + i2s], T2X[i2 + i2s],
+                                               T2Y[i2 + i2s])
+                    # making sure the intersection is between existing segments, not on their extension
+                    if T1X[i1 - 1] >= XI >= T1X[i1] and T2X[i2 - 1 + i2s] >= XI >= T2X[i2 + i2s]:
+                        break
+                    XI = YI = False
+            if XI or i2s == ftsr[-1]:
+                # i2s makes sure that if the intersection is not found in the 2 segment radius of following trajectory, index for segment of actual trajectory has to increase
+                i2s = False
+                break
+        if XI:
+            break
+    return XI, YI
+
+def calculate_intersection(x1, y1, x2, y2, x3, y3, x4, y4):
+    """Calculates intersection of 2 line segments and returns its X and Y coordinates"""
     x1, y1, x2, y2, x3, y3, x4, y4 = x1, y1, x2, y2, x3, y3, x4, y4
-    XP = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / ((x1 - x2) * (y3 - y4) - (y1 - y2) *
+    XI = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / ((x1 - x2) * (y3 - y4) - (y1 - y2) *
         (x3 - x4))
-    YP = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / ((x1 - x2) * (y3 - y4) - (y1 - y2) *
+    YI = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / ((x1 - x2) * (y3 - y4) - (y1 - y2) *
         (x3 - x4))
-    return XP, YP
+    return XI, YI
 
 def plot_trajectory():
     import matplotlib.pyplot as plt  # na vykreslenie grafov
@@ -330,22 +386,23 @@ def plot_trajectory():
         # plotting the points
         #plt.plot(TS[i][1][0], TS[i][1][1], markersize=5, linewidth=1, label=TS[i][0]/np.pi*180)
         plt.plot(TS[i][1][0], TS[i][1][1], '-', linewidth=1)
+    print(i)
     #plt.plot(temp_xyp[0], temp_xyp[1], 'r.', markersize=2)
-    xpar = max(TS, key=lambda x: x[1][0][-1])[1][0][-1]
-    ypar = max(TS[-1][1][1])
-    a = -ypar/xpar**2
-    b = 0
-    c = ypar
-    x = []
-    y = []
-    for i in range(0,int(xpar)+1):
-        x.append(i)
-        y.append(a*i**2+b*i+c)
-    plt.plot(x, y, 'b*', markersize=1)
+    # xpar = max(TS, key=lambda x: x[1][0][-1])[1][0][-1]
+    # ypar = max(TS[-1][1][1])
+    # a = -ypar/xpar**2
+    # b = 0
+    # c = ypar
+    # x = []
+    # y = []
+    # for i in range(0,int(xpar)+1):
+    #     x.append(i)
+    #     y.append(a*i**2+b*i+c)
+    # plt.plot(x, y, 'b*', markersize=1)
 
     # ohranicenie, popis osi a nastavenie rovnakej mierky v smere oboch osi
-    plt.xlim(0, 350)
-    plt.ylim(0, 330)
+    plt.xlim(0, 400)
+    plt.ylim(200, 600)
     plt.xlabel("vzdialenosť [m]")
     plt.ylabel("výška [m]")
     plt.gca().set_aspect('equal', adjustable='box')
@@ -354,7 +411,6 @@ def plot_trajectory():
     #plt.legend()
     plt.savefig('filename.png', dpi=900)
     plt.show()
-
 
 
 
@@ -374,11 +430,11 @@ cumulative_throwshed = 1 #Calculate cumulative throwshed? No = 0, Yes = 1 (Aprop
 EPSG = 8353 #EPSG code for CRS of output throwshed layer and other temporary results, must be same as DEM's EPSG
 
 ## VARIABLES
-initial_height = 0.0 #initial height of projectile above DEM when shot [m]
-alpha_min = -90.0 #minimum of vertical angle range at which the projectile is shot [°]
-alpha_max = 90.0 #maximum of vertical angle range at which the projectile is shot [°]
+initial_height = 1.7 #initial height of projectile above DEM when shot [m]
+alpha_min = 0.0 #minimum of vertical angle range at which the projectile is shot [°]
+alpha_max = 15.0 #maximum of vertical angle range at which the projectile is shot [°]
 gravitational_acceleration = -9.81 #gravitational acceleration [m/s^2]
-initial_velocity = 67 #initial velocity of projectile when shot [m/s]
+initial_velocity = 30 #initial velocity of projectile when shot [m/s]
 air_density = 1.225 #air density [kg/m^3]
 drag_coefficient = 2.0 #aerodynamic drag coefficient of projectile
 cross_sectional_area = 0.000050 #cross-sectional area of the projectile [m^2]
@@ -393,18 +449,19 @@ area_addition = 0.0 #average addition to cross-sectional area of an arrow within
 wobble_distance = 40 #wobble distance - distance at which an arrow stops wobbling [m]
 
 
-"""main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG,
+main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG,
          cumulative_throwshed, initial_height, initial_velocity, drag_coefficient, cross_sectional_area, mass,
-         eyes_height, target_height, wall_height, constant, area_addition, wobble_distance, band_number=1,
-         interpolation=1, alpha_min=-90, alpha_max=90, gravitational_acceleration=-9.81, air_density=1.225, dalpha=5,
-         trajectory_segment_width=None)"""
+         eyes_height, target_height, wall_height, constant, area_addition, wobble_distance, band_number=band_number,
+         interpolation=interpolation, alpha_min=alpha_min, alpha_max=alpha_max,
+         gravitational_acceleration=gravitational_acceleration, air_density=air_density, dalpha=dalpha,
+         trajectory_segment_width=None)
 
-global IH, IV, DC, CSA, M, CONST, AA, WD, GA, AD, point_height, TSW, DMINH, DMAXH, AL
-IH, IV, DC, CSA, M, CONST, AA, WD, GA, AD, point_height, TSW, DMINH, DMAXH = initial_height, initial_velocity, drag_coefficient, \
-        cross_sectional_area, mass, constant, area_addition, wobble_distance, gravitational_acceleration, air_density, \
-                                                               0.0, 1, 0.0, 200.0
-AL = np.arange(np.radians(-90), np.radians(90 + dalpha), np.radians(dalpha))
-throwshed()
+# global IH, IV, DC, CSA, M, CONST, AA, WD, GA, AD, point_height, TSW, DMINH, DMAXH, AL
+# IH, IV, DC, CSA, M, CONST, AA, WD, GA, AD, point_height, TSW, DMINH, DMAXH = initial_height, initial_velocity, drag_coefficient, \
+#         cross_sectional_area, mass, constant, area_addition, wobble_distance, gravitational_acceleration, air_density, \
+#                                                                0.0, 1, 0.0, 200.0
+
+# throwshed()
 
 #plot_trajectory()
 #print(np.degrees(TS[iti-1][0]),np.degrees(TS[iti][0]),np.degrees(TS[iti+1][0]),np.degrees(TS[iti+2][0]),np.degrees(TS[-1][0]))
