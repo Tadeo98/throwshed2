@@ -290,8 +290,7 @@ def trajectory_initial_set():
         while True:
             # generate new trajectory in between actual and following
             new_alpha = abs(TS[iti][0] - TS[iti + 1][0]) / 2 + TS[iti][0]
-            TS.append([new_alpha, generate_trajectory(new_alpha)])
-            TS.sort(key=lambda x: x[0])
+            TS.insert(iti+1, [new_alpha, generate_trajectory(new_alpha)])
             # in case of added trajectory having further reach than previously furthest trajectory (actual)
             if TS.index((max(TS, key=lambda x: x[1][0][-1]))) == iti + 1:
                 iti += 1
@@ -324,14 +323,16 @@ def trajectory_initial_set():
                     DAII = ((XA-XII)**2 + (YA-YII)**2)**(1/2)
                     break
             # controls - compare horizontal distance of intersections and distance of arc from inner intersection
-            if round(np.abs(XROI - XLOI)/TSW) and round(DAII/TSW):
+            if round(np.abs(XROI - XLOI)/TSW/2) and round(DAII/TSW/2):
                 continue
             else:
+                # with each shooting point the amount of these inserted auxiliary trajectories would almost double which could create pointless amount of trajectories
+                del TS[iti+1]
                 # making the net denser stops at DEM's max height
                 if YROI >= DMAXH:
                     break
-                # at least one of the conditions was met and the cycle can jump to next actual trajectory
-                iti += 2
+                # at least one of the conditions was met and the cycle can jump to next initial trajectory
+                iti += 1
                 # if the cycle comes to last trajectory, it breaks as there is no following trajectory
                 if TS[iti][0] == AL[-1]:
                     break
