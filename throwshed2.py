@@ -49,12 +49,6 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
         throwshed(point_geom)
         plot_trajectory()
         exit()
-        """
-        if len(envelope[0][0]) == 1:
-            print('len bod')
-        else:
-            print('obalka')
-        """
 
 
 
@@ -165,6 +159,10 @@ def throwshed(point_geom):
     trajectory_simple_set()
     # insert trajectories between those from simple set, to ensure throwshed's edge accuracy
     trajectory_initial_set()
+    if len(envelope[0]) == 1:
+        print('len bod')
+    else:
+        print('obalka')
 
 def int_function(X, Y):
     """Interpolates height of point from DEM cells"""
@@ -254,7 +252,7 @@ def generate_trajectory(alpha):
 def trajectory_initial_set():
     """Calculates and inserts trajectories between those in simple set, to make it denser and to ensure throwshed's
     edge accuracy. Calculates and returns trajectory envelope points list."""
-    global TS
+    global TS, envelope
     # new and previous trajectory end x, first ones are random, just to make sure the cycle does not stop immediately
     ntex = [(max(TS, key=lambda x: x[1][0][-1])[1][0][-1]+TSW)*2,(max(TS, key=lambda x: x[1][0][-1])[1][0][-1]+TSW)*3]
     # cycle that finds the furthest possible trajectory for minimal DEM height respecting the edge accuracy
@@ -277,14 +275,14 @@ def trajectory_initial_set():
         TS.sort(key=lambda x: x[0])
 
     # function ends after finding out the last trajectory is the one with furthest reach (rest of the code is not applicable) and returns just furthest point, otherwise envelope is set to empty list and trajectory set will get denser with following code
+    envelope = [[TS[mdti][1][0][-1]], [TS[mdti][1][1][-1]]]
     if mdti == len(TS)-1:
-        return [[TS[mdti][1][0][-1]], [TS[mdti][1][1][-1]]]
-    else:
-        # list for X,Y coordinates of points forming trajectory envelope
-        envelope = [[], []]
+        return envelope
 
     # initial trajectory index (starting will be the trajectory with furthest reach)
     iti = TS.index((max(TS, key=lambda x: x[1][0][-1])))
+    # X and Y Inner Interection from Previous Cycle will be set to furthest point during first cycle
+    XIIPR, YIIPR = envelope[0][0], envelope[1][0]
     # cycle that inserts trajectories between furthest trajectory at minimal DEM height and maximal DEM height
     try:
         while True:
@@ -294,22 +292,34 @@ def trajectory_initial_set():
             # in case of added trajectory having further reach than previously furthest trajectory (actual)
             if TS.index((max(TS, key=lambda x: x[1][0][-1]))) == iti + 1:
                 iti += 1
+                # even starting point of envelope needs to be updated
+                envelope = [[TS[iti][1][0][-1]], [TS[iti][1][1][-1]]]
+                XIIPR, YIIPR = envelope[0][0], envelope[1][0]
                 continue
-            # if the last trajectory incorporated in cycle is the last one from the net with shooting angle value of 90 degrees.
-            # This is because with 90 degrees trajectory left outer and inner intersections will be the same, which would lead to undesired behaviour
-            if TS[iti+2][0] == np.radians(90):
-                # if X coordinate of highest point in newly created trajectory is less than TSW, last possible area of the net was made dense enough
-                if not np.floor(TS[iti+1][1][0][TS[iti+1][1][1].index((max(TS[iti+1][1][1])))]/TSW):
-                    break
-                # if not, density will be accomplished with new iteration
-                else:
-                    continue
+
             # get intersection of actual and following (newly created) trajectory (Right Outer Intersection)
             XROI, YROI = intersection_of_trajectories(iti, iti+1)
             # get intersection of following and 2. following trajectory (Left Outer Intersection)
             XLOI, YLOI = intersection_of_trajectories(iti+1, iti+2)
             # get intersection of actual and 2. following trajectory (Inner Intersection), first one is calculated, the rest will be reused from outer intersections
             XII, YII = intersection_of_trajectories(iti, iti+2)
+
+            # if the last trajectory incorporated in cycle is the last one from the net with shooting angle value of 90 degrees.
+            # This is because with 90 degrees trajectory left outer and inner intersections will be the same, which would lead to undesired behaviour
+            if TS[iti+2][0] == np.radians(90):
+                # if X coordinate of highest point in newly created trajectory is less than TSW, last possible area of the net was made dense enough
+                if not np.floor(TS[iti+1][1][0][TS[iti+1][1][1].index((max(TS[iti+1][1][1])))]/TSW):
+                    # initial trajectory reversed list (X and Y coords)
+                    ITR = [list(reversed(TS[iti][1][0])), list(reversed(TS[iti][1][1]))]
+                    # update envelope
+                    update_envelope(ITR, XIIPR, XROI, YROI)
+                    for x, y in zip([TS[iti+1][1][0][TS[iti+1][1][1].index((max(TS[iti+1][1][1])))], 0], [max(TS[iti+1][1][1]), max(TS[-1][1][1])]):
+                        envelope[0].append(x)
+                        envelope[1].append(y)
+                    break
+                # if not, density will be accomplished with new iteration
+                else:
+                    continue
 
             # coordinates of midpoint on line between outer intersections (Outer Midpoint)
             XOM, YOM = (XROI + XLOI) / 2, (YROI + YLOI) / 2
@@ -319,15 +329,21 @@ def trajectory_initial_set():
             for i in range(len(FTR[0])-1):
                 XA, YA = calculate_intersection(XOM, YOM, XII, YII, FTR[0][i], FTR[1][i], FTR[0][i+1], FTR[1][i+1])
                 # checking if the intersection is really on the segment, if so, the distance of arc from inner intersection is calculated
-                if FTR[0][i] >= XA >= FTR[0][i+1] and FTR[1][i] <= YA <= FTR[1][i+1]:
+                if FTR[0][i] >= XA >= FTR[0][i+1]:
                     DAII = ((XA-XII)**2 + (YA-YII)**2)**(1/2)
                     break
             # controls - compare horizontal distance of intersections and distance of arc from inner intersection
-            if round(np.abs(XROI - XLOI)/TSW/2) and round(DAII/TSW/2):
+            if round(np.abs(XROI - XLOI)/TSW) and round(DAII/TSW):
                 continue
             else:
                 # with each shooting point the amount of these inserted auxiliary trajectories would almost double which could create pointless amount of trajectories
                 del TS[iti+1]
+                # initial trajectory reversed list (X and Y coords)
+                ITR = [list(reversed(TS[iti][1][0])), list(reversed(TS[iti][1][1]))]
+                # update envelope
+                update_envelope(ITR, XIIPR, XII, YII)
+                # previous intersection for next cycle is assigned
+                XIIPR, YIIPR = XII, YII
                 # making the net denser stops at DEM's max height
                 if YROI >= DMAXH:
                     break
@@ -380,6 +396,32 @@ def calculate_intersection(x1, y1, x2, y2, x3, y3, x4, y4):
         (x3 - x4))
     return XI, YI
 
+def update_envelope(ITR, XIIPR, XII, YII):
+    """Updates envelope with parts of trajectories."""
+    global envelope
+    # on reversed trajectory, index of first point that will be incorporated within the envelope is found
+    for i in range(len(ITR[0]) - 1):
+        if ITR[0][i] >= XIIPR >= ITR[0][i + 1]:
+            # Envelope Part Starting Point Index
+            EPSPI = i + 1
+            break
+    # on reversed trajectory, index of last point that will be incorporated within the envelope is found
+    for i in range(EPSPI - 1, len(ITR[0]) - 1):
+        if ITR[0][i] >= XII >= ITR[0][i + 1]:
+            # Envelope Part Ending Point Index
+            EPEPI = i
+            break
+    # condition for rare situation where both inner intersections could fall within one segment of trajectory
+    if EPEPI >= EPSPI:
+        # envelope is updated with all points between starting and ending point
+        for i in range(EPSPI, EPEPI + 1):
+            envelope[0].append(ITR[0][i])
+            envelope[1].append(ITR[1][i])
+    # lastly, envelope is updated with the inner intersection point
+    envelope[0].append(XII)
+    envelope[1].append(YII)
+
+
 def plot_trajectory():
     import matplotlib.pyplot as plt  # na vykreslenie grafov
     plt.figure(figsize=(32, 18))
@@ -387,6 +429,8 @@ def plot_trajectory():
         # plotting the points
         #plt.plot(TS[i][1][0], TS[i][1][1], markersize=5, linewidth=1, label=TS[i][0]/np.pi*180)
         plt.plot(TS[i][1][0], TS[i][1][1], '-', linewidth=1)
+
+    plt.plot(envelope[0], envelope[1], '-', linewidth=1)
     print(i)
     #plt.plot(temp_xyp[0], temp_xyp[1], 'r.', markersize=2)
     # xpar = max(TS, key=lambda x: x[1][0][-1])[1][0][-1]
@@ -402,8 +446,8 @@ def plot_trajectory():
     # plt.plot(x, y, 'b*', markersize=1)
 
     # ohranicenie, popis osi a nastavenie rovnakej mierky v smere oboch osi
-    plt.xlim(0, 400)
-    plt.ylim(200, 600)
+    plt.xlim(0, 30)
+    plt.ylim(500, 520)
     plt.xlabel("vzdialenosť [m]")
     plt.ylabel("výška [m]")
     plt.gca().set_aspect('equal', adjustable='box')
@@ -433,9 +477,9 @@ EPSG = 8353 #EPSG code for CRS of output throwshed layer and other temporary res
 ## VARIABLES
 initial_height = 1.7 #initial height of projectile above DEM when shot [m]
 alpha_min = 0.0 #minimum of vertical angle range at which the projectile is shot [°]
-alpha_max = 15.0 #maximum of vertical angle range at which the projectile is shot [°]
+alpha_max = 60.0 #maximum of vertical angle range at which the projectile is shot [°]
 gravitational_acceleration = -9.81 #gravitational acceleration [m/s^2]
-initial_velocity = 30 #initial velocity of projectile when shot [m/s]
+initial_velocity = 15 #initial velocity of projectile when shot [m/s]
 air_density = 1.225 #air density [kg/m^3]
 drag_coefficient = 2.0 #aerodynamic drag coefficient of projectile
 cross_sectional_area = 0.000050 #cross-sectional area of the projectile [m^2]
