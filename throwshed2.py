@@ -21,7 +21,7 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
         exit()
     # Global variables
     global SRS, DP, PLP, LLP, TOF, TF, UV, CV, BN, INT, BF, VF, TSW, AL, DDS, DB, DA, DGT, DMINH, DMAXH, IH, IV, DC, \
-        CSA, M, CONST, AA, WD, GA, AD, EH, TH
+        CSA, M, CONST, AA, WD, GA, AD, EH, TH, NDV, TA
     # CRS and other variable definition
     SRS = osr.SpatialReference()
     SRS.ImportFromEPSG(EPSG)
@@ -30,7 +30,7 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
         initial_velocity, drag_coefficient, cross_sectional_area, mass, constant, area_addition, wobble_distance, \
         gravitational_acceleration, air_density, eyes_height, target_height
     # get DEM data and assign them as global (and referencing datasource)
-    DDS, DB, DA, DGT = get_raster_from_file(dem_path)
+    DDS, DB, DA, DGT, NDV = get_raster_from_file(dem_path)
     # assign trajectory segment width
     TSW = np.min(np.abs([DGT[1],DGT[5]])) if trajectory_segment_width == None else trajectory_segment_width
     # obtain list of point geometries (and all referencing data it's dependent on)
@@ -43,17 +43,22 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
     # obtain list of vertical angles
     AL = np.arange(np.radians(alpha_min), np.radians(alpha_max + dalpha), np.radians(dalpha))
     AL[-1] = np.radians(alpha_max) # in case of last angle being larger than 90°
+    # throwshed array containing zeroes at first, will be edited later, dimensions same as dimensions of DEM raster
+    TA = [np.zeros((DA.shape[0], DA.shape[1]), np.int16), np.zeros((DA.shape[0], DA.shape[1]), np.int16)]
     # cycle calculating throwshed for each point
-    for point_geom in point_geom_list:
+    for i, point_geom in enumerate(point_geom_list):
         # compute throwshed for 1 point
-        throwshed(point_geom)
-        plot_trajectory()
-        exit()
+        throwshed(point_geom, i)
+        #plot_trajectory()
+        #break
+    # finally, array is written into band of output throwshed raster
+    create_raster_file(TF, TA, 1, gdal.GDT_Int16)
+    DDS = DB = DA = DGT = NDV = None
 
 
 
 def get_raster_from_file(file_path):
-    """Get DEM array and geotransformation data"""
+    """Get DEM datasource, band, array and geotransformation data and nodata value"""
     # import DEM datasource
     dem_ds = gdal.Open(file_path)
     # select band
@@ -62,7 +67,9 @@ def get_raster_from_file(file_path):
     dem_array = dem_band.ReadAsArray()
     # transformation data describing DEM
     dem_gt = dem_ds.GetGeoTransform()
-    return dem_ds, dem_band, dem_array, dem_gt
+    # nodata value
+    no_data_value = dem_band.GetNoDataValue()
+    return dem_ds, dem_band, dem_array, dem_gt, no_data_value
 
 def get_min_max_height():
     """Get minimum and maximum DEM height"""
@@ -99,7 +106,7 @@ def burn_obstacles(line_layer_path, wall_height):
     # create layer for buffer
     buffer_outlayer = create_outlayer(BFT, buffer_geom)
     # create buffer datasource
-    buffer_ds, buffer_band = create_raster_file(BFT, 0)
+    buffer_ds, buffer_band = create_raster_file(BFT, None, 0, gdal.GDT_Float32)
     # Buffer polygon is rasterized
     gdal.RasterizeLayer(buffer_ds, [1], buffer_outlayer, burn_values=[wall_height])
     # Sum of initial dem and buffer rasters
@@ -108,7 +115,7 @@ def burn_obstacles(line_layer_path, wall_height):
     DA = np.add(DA, buffer_array)
     buffer_ds = buffer_outlayer = None
     # create new raster datasource for DEM (DSM)
-    dem_ds, DB = create_raster_file(BFT, 1)
+    dem_ds, DB = create_raster_file(BFT, [DA], 1, gdal.GDT_Float32)
     dem_ds = None
     # delete all temporary files
     remove_temp_files(BFT)
@@ -128,18 +135,19 @@ def create_outlayer(layer_name, geom):
     outds = None
     return outlayer
 
-def create_raster_file(raster_name, method):
-    """Creates raster file. Method 0 returns empty datasource and band. Method 1 does the same and also writes array"""
+def create_raster_file(raster_name, dem_array_list, method, GDT):
+    """Creates raster file. Method 0 returns empty datasource and band. Method 1 returns datasource and band with written array"""
     # create driver and output data source
     outds = gdal.GetDriverByName('GTiff').Create(TOF + "\\" + raster_name + ".tif", xsize=DA.shape[1],
-                                                 ysize=DA.shape[0], bands=1, eType=gdal.GDT_Float32)
+                                                 ysize=DA.shape[0], bands=len(dem_array_list), eType=GDT)
     # assign geotransformation, projection, band and nodata settings
     outds.SetGeoTransform(DGT)
     outds.SetProjection(SRS.ExportToWkt())
-    raster_band = outds.GetRasterBand(1)
-    raster_band.SetNoDataValue(-9999)
-    if method == 1:
-        raster_band.WriteArray(DA)
+    for i, dem_array in enumerate(dem_array_list):
+        raster_band = outds.GetRasterBand(i+1)
+        raster_band.SetNoDataValue(NDV)
+        if method:
+            raster_band.WriteArray(dem_array)
     return outds, raster_band
 
 def remove_temp_files(temp_file):
@@ -147,7 +155,7 @@ def remove_temp_files(temp_file):
     for format in [file.split('.')[1] for file in os.listdir(TOF) if file.split('.')[0] == temp_file]:
         os.remove(TOF + '\\' + temp_file + "." + format)
 
-def throwshed(point_geom):
+def throwshed(point_geom, k):
     """Calculates throwshed for 1 point"""
     # get X and Y of shooter's place
     X_coor_point = point_geom.GetX()
@@ -159,12 +167,34 @@ def throwshed(point_geom):
     trajectory_simple_set()
     # insert trajectories between those from simple set, to ensure throwshed's edge accuracy
     trajectory_initial_set()
-    # Ascending and Descending Trajectory Fields
-    ATF, DTF = [], []
+    # define Ascending and Descending Trajectory Fields
+    global ATF, DTF
+    ATF, DTF = [[], []], [[], []]
     if len(envelope[0]) == 0:
-        print('len bod')
+        ATF[0] = TS[0][1][0] + TS[-1][1][0][-1::-1]
+        ATF[1] = TS[0][1][1] + TS[-1][1][1][-1::-1]
     else:
-        print('obalka')
+        # find out index of coords from last trajectory, where envelope connects with it
+        for i in range(len(TS[-1][1][0])-1):
+            # for last trajectory with shooting angle 90 degrees this stops immediately, to ATF is added first point of last trajectory, which still creates correct polygon
+            if TS[-1][1][0][i] <= envelope[0][-1] <= TS[-1][1][0][i+1]:
+                break
+        ATF[0] = TS[0][1][0] + envelope[0] + TS[-1][1][0][i::-1]
+        ATF[1] = TS[0][1][1] + envelope[1] + TS[-1][1][1][i::-1]
+        # but for DTF with last trajectory shooting angle being 90 degrees, i is edited so that only last point down at min DEM height is added to polygon
+        i = -2 if TS[-1][0] == AL[-1] else i
+        DTF[0] = envelope[0] + TS[-1][1][0][i+1:] + envelope[0][:1]
+        DTF[1] = envelope[1] + TS[-1][1][1][i+1:] + envelope[1][:1]
+
+    # create polygons for the fields and call function for assigning values in throwshed array
+    ATF_polygon = create_polygon_from_coords_list(ATF)
+    assign_values_to_throwshed(X_coor_point, Y_coor_point, k, ATF_polygon, 0)
+    # DTF could be empty, therefore condition
+    if DTF[0]:
+        DTF_polygon = create_polygon_from_coords_list(DTF)
+        assign_values_to_throwshed(X_coor_point, Y_coor_point, k, DTF_polygon, 1)
+
+
 
 def int_function(X, Y):
     """Interpolates height of point from DEM cells"""
@@ -313,11 +343,11 @@ def trajectory_initial_set():
                 # if X coordinate of highest point in newly created trajectory is less than TSW, last possible area of the net was made dense enough
                 if not np.floor(TS[iti+1][1][0][TS[iti+1][1][1].index((max(TS[iti+1][1][1])))]/TSW):
                     # Initial Trajectory Reversed list (X and Y coords)
-                    ITR = [list(reversed(TS[iti][1][0])), list(reversed(TS[iti][1][1]))]
+                    ITR = [TS[iti][1][0][-1::-1], TS[iti][1][1][-1::-1]]
                     # update envelope with points from initial trajectory of last cycle
                     update_envelope(ITR, XIIPR, XROI, YROI)
                     # Last Inserted Trajectory Reversed list (X and Y coords)
-                    LITR = [list(reversed(TS[iti+1][1][0])), list(reversed(TS[iti+1][1][1]))]
+                    LITR = [TS[iti+1][1][0][-1::-1], TS[iti+1][1][1][-1::-1]]
                     # last points from last inserted trajectory and highest point of last trajectory are appended to envelope
                     for x, y in zip(LITR[0], LITR[1]):
                         if y > YROI:
@@ -335,7 +365,7 @@ def trajectory_initial_set():
             # coordinates of midpoint on line between outer intersections (Outer Midpoint)
             XOM, YOM = (XROI + XLOI) / 2, (YROI + YLOI) / 2
             # following trajectory reversed list (X and Y coords)
-            FTR = [list(reversed(TS[iti + 1][1][0])), list(reversed(TS[iti + 1][1][1]))]
+            FTR = [TS[iti + 1][1][0][-1::-1], TS[iti + 1][1][1][-1::-1]]
             # finds intersection of arc distance and particular segment on the arc
             for i in range(len(FTR[0])-1):
                 XA, YA = calculate_intersection(XOM, YOM, XII, YII, FTR[0][i], FTR[1][i], FTR[0][i+1], FTR[1][i+1])
@@ -350,45 +380,25 @@ def trajectory_initial_set():
                 # with each shooting point the amount of these inserted auxiliary trajectories would almost double which could create pointless amount of trajectories
                 del TS[iti+1]
                 # initial trajectory reversed list (X and Y coords)
-                ITR = [list(reversed(TS[iti][1][0])), list(reversed(TS[iti][1][1]))]
+                ITR = [TS[iti][1][0][-1::-1], TS[iti][1][1][-1::-1]]
                 # update envelope
                 update_envelope(ITR, XIIPR, XII, YII)
                 # previous intersection for next cycle is assigned
                 XIIPR, YIIPR = XII, YII
-                # making the net denser stops at DEM's max height
-                if YROI >= DMAXH:
-                    break
                 # at least one of the conditions was met and the cycle can jump to next initial trajectory
                 iti += 1
                 # if the cycle comes to last trajectory, it breaks as there is no following trajectory
                 if TS[iti][0] == AL[-1]:
-                    # to ensure the envelope touches max DEM height limit, last few points from last trajectory are added
-                    if envelope[1][-1] < DMAXH and max(TS[iti][1][1]) >= DMAXH :
-                        for x, y in zip(reversed(TS[iti][1][0]), reversed(TS[iti][1][1])):
-                            if x < envelope[0][-1]:
-                                envelope[0].append(x)
-                                envelope[1].append(y)
-                            if y >= DMAXH:
-                                break
                     break
     except Exception as e:
         print(e)
-    # Clip envelope to max DEM height if it has been exceeded
-    for i in range(1, len(envelope[0])):
-        if envelope[1][i] > DMAXH:
-            # New Envelope End Point is interpolated
-            NEEP = [envelope[0][i] + (envelope[0][i-1] - envelope[0][i]) / (envelope[1][i] - envelope[1][i-1]) * (envelope[1][i] - DMAXH), DMAXH]
-            envelope = [envelope[0][:i], envelope[1][:i]]
-            envelope[0].append(NEEP[0])
-            envelope[1].append(NEEP[1])
-            break
 
 def intersection_of_trajectories(t1i,t2i):
     """Looks for intersection between two trajectories and returns its X and Y coordinates.
     t1i and t2i are indexes of first and second trajectory between which the intersection is sought."""
     # reversed lists of trajectories' coordinates as the algorithm starts from end points, TX1 = X coordinates of 1. trajectory
-    T1X, T1Y = list(reversed(TS[t1i][1][0])), list(reversed(TS[t1i][1][1]))
-    T2X, T2Y = list(reversed(TS[t2i][1][0])), list(reversed(TS[t2i][1][1]))
+    T1X, T1Y = TS[t1i][1][0][-1::-1], TS[t1i][1][1][-1::-1]
+    T2X, T2Y = TS[t2i][1][0][-1::-1], TS[t2i][1][1][-1::-1]
     # X and Y coords of intersection (to be compared e.g. with XPI), i2s stands for radius around i2 (or index)
     XI = YI = i2s = False
     # following trajectory segment radius where the intersection will be sought
@@ -449,6 +459,40 @@ def update_envelope(ITR, XIIPR, XII, YII):
     envelope[0].append(XII)
     envelope[1].append(YII)
 
+def create_polygon_from_coords_list(x_y_list):
+    """Creates ring from list of X and Y coordinates, then uses ring to create polygon which is returned."""
+    # create ring
+    ring = ogr.Geometry(ogr.wkbLinearRing)
+    for x, y in zip(x_y_list[0], x_y_list[1]):
+        ring.AddPoint(x, y)
+    # create polygon
+    polygon = ogr.Geometry(ogr.wkbPolygon)
+    polygon.AddGeometry(ring)
+    return polygon
+
+def assign_values_to_throwshed(X_coor_point, Y_coor_point, k, field_polygon, l):
+    """Assigns/adds values into throwshed arrays."""
+    # cycle going through every single cell of DEM
+    for i in range(DA.shape[0]):
+        for j in range(DA.shape[1]):
+            # with multiple shooting points nodata value can already be assigned to the cell, therefore the algorithm jumps to following cell
+            if TA[l][i][j] == NDV:
+                continue
+            # for second and following points (k - point number) there is no need to reassign nodata value that has already been assigned
+            if k == 0 and DA[i][j] == NDV:
+                TA[l][i][j] = NDV
+                continue
+            # calculate coordinates of cell's middle point and its horizontal distance from shooting point
+            X_coor_cell = DGT[0]+(j+1/2)*DGT[1]
+            Y_coor_cell = DGT[3]+(i+1/2)*DGT[5]
+            cell_distance = ((X_coor_point-X_coor_cell)**2 + (Y_coor_point-Y_coor_cell)**2)**(1/2)
+            # create cell point and find out whether it's within the field, if so, further actions are conducted
+            cell = ogr.Geometry(ogr.wkbPoint)
+            cell.AddPoint(cell_distance, float(DA[i][j]))
+            if cell.Within(field_polygon):
+
+                TA[l][i][j] += 1
+
 def plot_trajectory():
     import matplotlib.pyplot as plt  # na vykreslenie grafov
     plt.figure(figsize=(32, 18))
@@ -459,6 +503,8 @@ def plot_trajectory():
 
     plt.plot(envelope[0], envelope[1], '-', linewidth=1)
     plt.plot([0, max(TS, key=lambda x: x[1][0][-1])[1][0][-1]], [DMAXH, DMAXH], '-', linewidth=1)
+    plt.plot(ATF[0], ATF[1], '-', linewidth=3)
+    plt.plot(DTF[0], DTF[1], '-', linewidth=2)
     print(i)
     #plt.plot(temp_xyp[0], temp_xyp[1], 'r.', markersize=2)
     # xpar = max(TS, key=lambda x: x[1][0][-1])[1][0][-1]
@@ -474,8 +520,8 @@ def plot_trajectory():
     # plt.plot(x, y, 'b*', markersize=1)
 
     # ohranicenie, popis osi a nastavenie rovnakej mierky v smere oboch osi
-    plt.xlim(0, 30)
-    plt.ylim(500, 520)
+    plt.xlim(0, 210)
+    plt.ylim(300, 510)
     plt.xlabel("vzdialenosť [m]")
     plt.ylabel("výška [m]")
     plt.gca().set_aspect('equal', adjustable='box')
@@ -489,11 +535,11 @@ def plot_trajectory():
 
 #######################################################################
 ## PATHS
-dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\dem\dmr.tif" #path to DEM
+dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\dem\dmr_clip2.tif" #path to DEM
 point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\point\points1.shp"   #path to point layer
 line_layer_path = None #r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\line\lines1.shp" #path to line layer, if obstacles are not to be used, set to None
 throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\throwshed"  #path to folder, where the file will be saved
-throwshed_file = r"throwshedtest1"   #name of output throwshed file
+throwshed_file = r"throwshedtestnew"   #name of output throwshed file
 
 ## SETTINGS
 use_viewshed = 1 #utilization of viewshed, that will clip throwshed, No = 0, Yes = 1
@@ -505,14 +551,14 @@ EPSG = 8353 #EPSG code for CRS of output throwshed layer and other temporary res
 ## VARIABLES
 initial_height = 1.7 #initial height of projectile above DEM when shot [m]
 alpha_min = 0.0 #minimum of vertical angle range at which the projectile is shot [°]
-alpha_max = 90.0 #maximum of vertical angle range at which the projectile is shot [°]
+alpha_max = 45.0 #maximum of vertical angle range at which the projectile is shot [°]
 gravitational_acceleration = -9.81 #gravitational acceleration [m/s^2]
-initial_velocity = 10 #initial velocity of projectile when shot [m/s]
+initial_velocity = 30 #initial velocity of projectile when shot [m/s]
 air_density = 1.225 #air density [kg/m^3]
 drag_coefficient = 2.0 #aerodynamic drag coefficient of projectile
 cross_sectional_area = 0.000050 #cross-sectional area of the projectile [m^2]
 mass = 0.035 #projectile mass [kg]
-dalpha = 10 #step in vertical angle range [°]
+dalpha = 5 #step in vertical angle range [°]
 trajectory_segment_width = None #distance step, at which trajectory's points will be saved and compared to DEM [m], None = adjusted to DEM resolution (cell's size), any float/int value = customized distance step
 eyes_height = 1.6 #shooter eye height above DEM for viewshed [m]
 target_height = 1.7 #target height for viewshed [m]
