@@ -157,12 +157,10 @@ def remove_temp_files(temp_file):
 
 def throwshed(point_geom, k):
     """Calculates throwshed for 1 point"""
-    # get X and Y of shooter's place
-    X_coor_point = point_geom.GetX()
-    Y_coor_point = point_geom.GetY()
-    # get interpolated height of point from DEM
-    global point_height
-    point_height = int_function(X_coor_point, Y_coor_point)
+    global SP
+    # create shooting point with Z coordinate that is interpolated from DEM
+    SP = ogr.Geometry(ogr.wkbPoint)
+    SP.AddPoint(point_geom.GetX(), point_geom.GetY(),int_function(point_geom.GetX(), point_geom.GetY()))
     # generate set of trajectories for vertical angle range with basic step
     trajectory_simple_set()
     # insert trajectories between those from simple set, to ensure throwshed's edge accuracy
@@ -188,11 +186,11 @@ def throwshed(point_geom, k):
 
     # create polygons for the fields and call function for assigning values in throwshed array
     ATF_polygon = create_polygon_from_coords_list(ATF)
-    assign_values_to_throwshed(X_coor_point, Y_coor_point, k, ATF_polygon, 0)
+    assign_values_to_throwshed(k, ATF_polygon, 0)
     # DTF could be empty, therefore condition
     if DTF[0]:
         DTF_polygon = create_polygon_from_coords_list(DTF)
-        assign_values_to_throwshed(X_coor_point, Y_coor_point, k, DTF_polygon, 1)
+        assign_values_to_throwshed(k, DTF_polygon, 1)
 
 
 
@@ -232,7 +230,7 @@ def generate_trajectory(alpha):
     # initial projectile velocity
     V = IV
     # list of all trajectory points' coordinates
-    points = [[0.0], [IH + point_height]]
+    points = [[0.0], [IH + SP.GetZ()]]
     # velocity x and y elements
     V_x = V * np.cos(alpha)
     V_y = V * np.sin(alpha)
@@ -264,7 +262,7 @@ def generate_trajectory(alpha):
         # new velocity
         V = ((dX / dt) ** 2 + (dY / dt) ** 2) ** (1 / 2)
         # new drag
-        if (points[0][-1] ** 2 + (points[1][-1] - point_height) ** 2) ** (1 / 2) < WD:
+        if (points[0][-1] ** 2 + (points[1][-1] - SP.GetZ()) ** 2) ** (1 / 2) < WD:
             d = -AD * V ** 2 * DC * CONST * (CSA + AA) / (2 * M)
         else:
             d = -AD * V ** 2 * DC * CSA / (2 * M)
@@ -470,7 +468,7 @@ def create_polygon_from_coords_list(x_y_list):
     polygon.AddGeometry(ring)
     return polygon
 
-def assign_values_to_throwshed(X_coor_point, Y_coor_point, k, field_polygon, l):
+def assign_values_to_throwshed(k, field_polygon, l):
     """Assigns/adds values into throwshed arrays."""
     # cycle going through every single cell of DEM
     for i in range(DA.shape[0]):
@@ -485,13 +483,81 @@ def assign_values_to_throwshed(X_coor_point, Y_coor_point, k, field_polygon, l):
             # calculate coordinates of cell's middle point and its horizontal distance from shooting point
             X_coor_cell = DGT[0]+(j+1/2)*DGT[1]
             Y_coor_cell = DGT[3]+(i+1/2)*DGT[5]
-            cell_distance = ((X_coor_point-X_coor_cell)**2 + (Y_coor_point-Y_coor_cell)**2)**(1/2)
-            # create cell point and find out whether it's within the field, if so, further actions are conducted
-            cell = ogr.Geometry(ogr.wkbPoint)
-            cell.AddPoint(cell_distance, float(DA[i][j]))
-            if cell.Within(field_polygon):
+            cell_distance = ((SP.GetX() - X_coor_cell)**2 + (SP.GetY()-Y_coor_cell)**2)**(1/2)
+            # create cell point with relative coordinates in the plane of trajectories and find out whether it's within the field, if so, further actions are conducted
+            relative_cell = ogr.Geometry(ogr.wkbPoint)
+            relative_cell.AddPoint(cell_distance, float(DA[i][j]))
+            if relative_cell.Within(field_polygon):
+                if cell_accessibility(relative_cell):
+                    TA[l][i][j] += 1
 
-                TA[l][i][j] += 1
+def cell_accessibility(relative_cell):
+    """Returns True (cell hittable) or False (cell not hittable) depending on the result of cell's trajectory
+    comparison with terrain profile."""
+    # at first, 2 surrounding trajectories are found by making polygon out of them and asking whether the cell lies within
+    i = -1
+    while True:
+        i += 1
+        # create polygon
+        polygon = create_polygon_from_coords_list([TS[i][1][0]+TS[i+1][1][0][-1::-1], TS[i][1][1]+TS[i+1][1][1][-1::-1]])
+        if relative_cell.Within(polygon):
+            # compute normal from previous trajectory segment to cell
+            normal1, j = compute_normal(i, relative_cell.GetX(), relative_cell.GetY())
+            # if cell is not close enough to trajectory to consider it as piercing trajectory, following trajectory is tested. If it is close enough, cycle breaks with i being the index of intersecting trajectory
+            if np.round(normal1/TSW):
+                normal2, j = compute_normal(i+1, relative_cell.GetX(), relative_cell.GetY())
+                # if neither of normals is less than allowed distance, new trajectory is inserted in between previous and following trajectory with help of normals ratio
+                if np.round(normal2/TSW):
+                    # new alpha calculated from the normal ratio and new trajectory is generated
+                    new_alpha = abs(TS[i][0] - TS[i+1][0]) * normal1/(normal1 + normal2) + TS[i][0]
+                    TS.insert(i+1, [new_alpha, generate_trajectory(new_alpha)])
+                    # index i needs to be set one less to start again at the same trajectory
+                    i -= 1
+                    continue
+                # if the following trajectory is the intersecting one, trajectory index is set accordingly
+                else:
+                    i += 1
+                    break
+            break
+    return trajectory_terrain_comparison(i, j, relative_cell)
+
+def compute_normal(i, X_relative_cell, Y_relative_cell):
+    """Computes perpendicular distance from closest segment of given trajectory and returns its size as well as index
+    of first point of closest segment."""
+    # Trajectory Point - Cell Distance List
+    TPCDL = [((TS[i][1][0][j] - X_relative_cell) ** 2 + (TS[i][1][1][j] - Y_relative_cell) ** 2) ** (1 / 2) for j in range(len(TS[i]))]
+    # index of closest point to cell is found
+    j = TPCDL.index(min(TPCDL))
+    # index of first of two closest points to cell is found
+    if j != 0 and j != len(TPCDL) - 1:
+        if TPCDL[j - 1] < TPCDL[j + 1]:
+            j -= 1
+    elif j == len(TPCDL) - 1:
+        j -= 1
+    # if closest point to cell mid point is closer than allowed distance, this distance is returned as there is no need to compute perpendicular distance to whole segment which can be only smaller than the point-cell distance
+    if not np.round(min(TPCDL) / TSW):
+        return min(TPCDL), j
+    # calculate perpendicular distance (normal) from closest trajectory segment
+    a = TPCDL[j]
+    b = TPCDL[j + 1]
+    c = ((TS[i][1][0][j] - TS[i][1][0][j + 1]) ** 2 + (TS[i][1][1][j] - TS[i][1][1][j + 1]) ** 2) ** (1 / 2)
+    s = (a + b + c) / 2
+    area = (s * (s - a) * (s - b) * (s - c)) ** (1 / 2)
+    return area / c * 2, j
+
+def trajectory_terrain_comparison(i, j, relative_cell):
+    """Computes coordinates of terrain corresponding to each trajectory point and returns True or False depending
+    on the result of terrain and trajectory point heights comparison."""
+    # calculate azimuth of trajectory (shooting point to cell point)
+    Azimuth = np.arctan((relative_cell.GetX() - SP.GetX())/(relative_cell.GetY() - SP.GetY()))
+    # cycle iterates from first point of trajectory to the first point of segment closest to the cell point
+    for X, Y in zip(TS[i][1][0][:j+1]):
+        X_compare_point = SP.GetX() + X * np.sin(Azimuth)
+        Y_compare_point = SP.GetY() + X * np.cos(Azimuth)
+        Z_compare_point = int_function(X_compare_point, Y_compare_point)
+        if Y <= Z_compare_point:
+            return False
+    return True
 
 def plot_trajectory():
     import matplotlib.pyplot as plt  # na vykreslenie grafov
