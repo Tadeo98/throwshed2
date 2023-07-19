@@ -50,7 +50,7 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
         # compute throwshed for 1 point
         throwshed(point_geom, i)
         #plot_trajectory()
-        #break
+        break
     # finally, array is written into band of output throwshed raster
     create_raster_file(TF, TA, 1, gdal.GDT_Int16)
     DDS = DB = DA = DGT = NDV = None
@@ -160,39 +160,15 @@ def throwshed(point_geom, k):
     global SP
     # create shooting point with Z coordinate that is interpolated from DEM
     SP = ogr.Geometry(ogr.wkbPoint)
-    SP.AddPoint(point_geom.GetX(), point_geom.GetY(),int_function(point_geom.GetX(), point_geom.GetY()))
+    SP.AddPoint(point_geom.GetX(), point_geom.GetY(), float(int_function(point_geom.GetX(), point_geom.GetY())))
     # generate set of trajectories for vertical angle range with basic step
     trajectory_simple_set()
     # insert trajectories between those from simple set, to ensure throwshed's edge accuracy
     trajectory_initial_set()
     # define Ascending and Descending Trajectory Fields
-    global ATF, DTF
-    ATF, DTF = [[], []], [[], []]
-    if len(envelope[0]) == 0:
-        ATF[0] = TS[0][1][0] + TS[-1][1][0][-1::-1]
-        ATF[1] = TS[0][1][1] + TS[-1][1][1][-1::-1]
-    else:
-        # find out index of coords from last trajectory, where envelope connects with it
-        for i in range(len(TS[-1][1][0])-1):
-            # for last trajectory with shooting angle 90 degrees this stops immediately, to ATF is added first point of last trajectory, which still creates correct polygon
-            if TS[-1][1][0][i] <= envelope[0][-1] <= TS[-1][1][0][i+1]:
-                break
-        ATF[0] = TS[0][1][0] + envelope[0] + TS[-1][1][0][i::-1]
-        ATF[1] = TS[0][1][1] + envelope[1] + TS[-1][1][1][i::-1]
-        # but for DTF with last trajectory shooting angle being 90 degrees, i is edited so that only last point down at min DEM height is added to polygon
-        i = -2 if TS[-1][0] == AL[-1] else i
-        DTF[0] = envelope[0] + TS[-1][1][0][i+1:] + envelope[0][:1]
-        DTF[1] = envelope[1] + TS[-1][1][1][i+1:] + envelope[1][:1]
-
-    # create polygons for the fields and call function for assigning values in throwshed array
-    ATF_polygon = create_polygon_from_coords_list(ATF)
-    assign_values_to_throwshed(k, ATF_polygon, 0)
-    # DTF could be empty, therefore condition
-    if DTF[0]:
-        DTF_polygon = create_polygon_from_coords_list(DTF)
-        assign_values_to_throwshed(k, DTF_polygon, 1)
-
-
+    create_trajectory_fields()
+    # Assign values into arrays of 2 bands (ATF and DTF)
+    assign_values_to_throwshed(k)
 
 def int_function(X, Y):
     """Interpolates height of point from DEM cells"""
@@ -457,6 +433,34 @@ def update_envelope(ITR, XIIPR, XII, YII):
     envelope[0].append(XII)
     envelope[1].append(YII)
 
+def create_trajectory_fields():
+    """Creates ATF - Ascending Trajectory Field and DTF - Descending Trajectory Field. Lists are made into polygons."""
+    global ATF_polygon, DTF_polygon
+    ATF_polygon, DTF_polygon = None, None
+    ATF, DTF = [[], []], [[], []]
+    # in this case DTF does not exist
+    if len(envelope[0]) == 0:
+        ATF[0] = TS[0][1][0] + TS[-1][1][0][-1::-1]
+        ATF[1] = TS[0][1][1] + TS[-1][1][1][-1::-1]
+        # create polygon out of the list
+        ATF_polygon = create_polygon_from_coords_list(ATF)
+    # in this case both ATF and DTF are created
+    else:
+        # find out index of coords from last trajectory, where envelope connects with it
+        for i in range(len(TS[-1][1][0])-1):
+            # for last trajectory with shooting angle 90 degrees this stops immediately, to ATF is added first point of last trajectory, which still creates correct polygon
+            if TS[-1][1][0][i] <= envelope[0][-1] <= TS[-1][1][0][i+1]:
+                break
+        ATF[0] = TS[0][1][0] + envelope[0] + TS[-1][1][0][i::-1]
+        ATF[1] = TS[0][1][1] + envelope[1] + TS[-1][1][1][i::-1]
+        # but for DTF with last trajectory shooting angle being 90 degrees, i is edited so that only last point down at min DEM height is added to polygon
+        i = -2 if TS[-1][0] == AL[-1] else i
+        DTF[0] = envelope[0] + TS[-1][1][0][i+1:] + envelope[0][:1]
+        DTF[1] = envelope[1] + TS[-1][1][1][i+1:] + envelope[1][:1]
+        # create polygons out of the lists
+        ATF_polygon = create_polygon_from_coords_list(ATF)
+        DTF_polygon = create_polygon_from_coords_list(DTF)
+
 def create_polygon_from_coords_list(x_y_list):
     """Creates ring from list of X and Y coordinates, then uses ring to create polygon which is returned."""
     # create ring
@@ -468,17 +472,19 @@ def create_polygon_from_coords_list(x_y_list):
     polygon.AddGeometry(ring)
     return polygon
 
-def assign_values_to_throwshed(k, field_polygon, l):
+def assign_values_to_throwshed(k):
     """Assigns/adds values into throwshed arrays."""
     # cycle going through every single cell of DEM
     for i in range(DA.shape[0]):
+        print(i)
         for j in range(DA.shape[1]):
             # with multiple shooting points nodata value can already be assigned to the cell, therefore the algorithm jumps to following cell
-            if TA[l][i][j] == NDV:
+            if TA[0][i][j] == NDV:
                 continue
-            # for second and following points (k - point number) there is no need to reassign nodata value that has already been assigned
+            # nodata value is assigned to both arrays for both bands (ATF and DTF)
             if k == 0 and DA[i][j] == NDV:
-                TA[l][i][j] = NDV
+                TA[0][i][j] = NDV
+                TA[1][i][j] = NDV
                 continue
             # calculate coordinates of cell's middle point and its horizontal distance from shooting point
             X_coor_cell = DGT[0]+(j+1/2)*DGT[1]
@@ -487,36 +493,70 @@ def assign_values_to_throwshed(k, field_polygon, l):
             # create cell point with relative coordinates in the plane of trajectories and find out whether it's within the field, if so, further actions are conducted
             relative_cell = ogr.Geometry(ogr.wkbPoint)
             relative_cell.AddPoint(cell_distance, float(DA[i][j]))
-            if relative_cell.Within(field_polygon):
-                if cell_accessibility(relative_cell):
-                    TA[l][i][j] += 1
+            # call function to find cell intersecting trajectory and to determine whether the cell is reachable without any obstacles
+            if relative_cell.Within(ATF_polygon):
+                if find_intersecting_trajectory(1, -1, -1, -1, relative_cell):
+                    TA[0][i][j] += 1
+            # can be None
+            if DTF_polygon:
+                if relative_cell.Within(DTF_polygon):
+                    if find_intersecting_trajectory(-1, len(TS), len(TS), len(TS), relative_cell):
+                        TA[1][i][j] += 1
 
-def cell_accessibility(relative_cell):
-    """Returns True (cell hittable) or False (cell not hittable) depending on the result of cell's trajectory
-    comparison with terrain profile."""
+def find_intersecting_trajectory(step, i, i1, i2, relative_cell):
+    """Finds trajectory that intersects the cell (or is close enough, within allowed distance). For ATF cycle
+    increments from start to end of trajectory set and viceversa for DTF. Returns True if the cell is accessible
+    or False if the cell is not accessible without any obstacles - this is determined further function."""
     # at first, 2 surrounding trajectories are found by making polygon out of them and asking whether the cell lies within
-    i = -1
     while True:
-        i += 1
-        # create polygon
-        polygon = create_polygon_from_coords_list([TS[i][1][0]+TS[i+1][1][0][-1::-1], TS[i][1][1]+TS[i+1][1][1][-1::-1]])
+        i += step
+        # create polygon specially for the last two trajectories when looking for ascending or first two when looking for descending trajectory if the last one has shooting angle 90 degrees
+        if i == len(TS) - 2 and step == 1 and TS[-1][0] == np.radians(90):
+            polygon = create_polygon_from_coords_list([TS[i][1][0][:TS[i][1][1].index((max(TS[i][1][1])))+1] + TS[i+step][1][0][TS[i+step][1][1].index((max(TS[i+step][1][1])))::-1], TS[i][1][1][:TS[i][1][1].index((max(TS[i][1][1])))+1] + TS[i + step][1][1][TS[i+step][1][1].index((max(TS[i+step][1][1])))::-1]])
+        elif i == len(TS) - 1 and step == -1 and TS[-1][0] == np.radians(90):
+            polygon = create_polygon_from_coords_list([TS[i][1][0][-1:TS[i][1][1].index((max(TS[i][1][1])))+1:-1] + TS[i+step][1][0][TS[i+step][1][1].index((max(TS[i+step][1][1]))):] + TS[i][1][0][-1:], TS[i][1][1][-1:TS[i][1][1].index((max(TS[i][1][1])))+1:-1] + TS[i + step][1][1][TS[i+step][1][1].index((max(TS[i+step][1][1]))):] + TS[i][1][1][-1:]])
+        # or create polygon regularly
+        else:
+            polygon = create_polygon_from_coords_list([TS[i][1][0] + TS[i + step][1][0][-1::-1], TS[i][1][1] + TS[i + step][1][1][-1::-1]])
+        # if the cell lies within, normals are computed to assess the smallest perpendicular distance from trajectory to cell
         if relative_cell.Within(polygon):
-            # compute normal from previous trajectory segment to cell
-            normal1, j = compute_normal(i, relative_cell.GetX(), relative_cell.GetY())
+            # this is just to recycle normal1 computed in previous cycle that will be the same if first half of previous polygon is the one the cell lies within
+            if i1 - i:
+                # compute normal from previous trajectory segment to cell
+                normal1, j = compute_normal(i, relative_cell.GetX(), relative_cell.GetY())
+            # auxiliary index i1 to find out if the normal1 was already computed, will be used in next iteration, works with both directions of incrementing
+            if step == -1:
+                i1 = i + 1
+            else:
+                i1 = i
             # if cell is not close enough to trajectory to consider it as piercing trajectory, following trajectory is tested. If it is close enough, cycle breaks with i being the index of intersecting trajectory
-            if np.round(normal1/TSW):
-                normal2, j = compute_normal(i+1, relative_cell.GetX(), relative_cell.GetY())
+            if np.round(normal1 / TSW):
+                # this is just to recycle normal2 computed in previous cycle that will be the same if second half of previous polygon is the one the cell lies within
+                if i2 - i:
+                    normal2, j = compute_normal(i + step, relative_cell.GetX(), relative_cell.GetY())
+                # auxiliary index i2, for normal2
+                if step == -1:
+                    i2 = i - 1
+                else:
+                    i2 = i + 2 * step
                 # if neither of normals is less than allowed distance, new trajectory is inserted in between previous and following trajectory with help of normals ratio
-                if np.round(normal2/TSW):
-                    # new alpha calculated from the normal ratio and new trajectory is generated
-                    new_alpha = abs(TS[i][0] - TS[i+1][0]) * normal1/(normal1 + normal2) + TS[i][0]
-                    TS.insert(i+1, [new_alpha, generate_trajectory(new_alpha)])
-                    # index i needs to be set one less to start again at the same trajectory
-                    i -= 1
+                if np.round(normal2 / TSW):
+                    # new alpha calculated from the normal ratio and new trajectory is generated (depends which direction the cycle is incrementing)
+                    if step == -1:
+                        new_alpha = TS[i][0] - abs(TS[i][0] - TS[i + step][0]) * normal2 / (normal1 + normal2)
+                        TS.insert(i, [new_alpha, generate_trajectory(new_alpha)])
+                    else:
+                        new_alpha = TS[i][0] + abs(TS[i][0] - TS[i + step][0]) * normal1 / (normal1 + normal2)
+                        TS.insert(i + step, [new_alpha, generate_trajectory(new_alpha)])
+                    # index i needs to be set one less to start again at the same trajectory (or 2 more if incrementing from the end of set)
+                    if step == -1:
+                        i -= 2 * step
+                    else:
+                        i -= step
                     continue
                 # if the following trajectory is the intersecting one, trajectory index is set accordingly
                 else:
-                    i += 1
+                    i += step
                     break
             break
     return trajectory_terrain_comparison(i, j, relative_cell)
@@ -525,7 +565,7 @@ def compute_normal(i, X_relative_cell, Y_relative_cell):
     """Computes perpendicular distance from closest segment of given trajectory and returns its size as well as index
     of first point of closest segment."""
     # Trajectory Point - Cell Distance List
-    TPCDL = [((TS[i][1][0][j] - X_relative_cell) ** 2 + (TS[i][1][1][j] - Y_relative_cell) ** 2) ** (1 / 2) for j in range(len(TS[i]))]
+    TPCDL = [((TS[i][1][0][j] - X_relative_cell) ** 2 + (TS[i][1][1][j] - Y_relative_cell) ** 2) ** (1 / 2) for j in range(len(TS[i][1][0]))]
     # index of closest point to cell is found
     j = TPCDL.index(min(TPCDL))
     # index of first of two closest points to cell is found
@@ -551,12 +591,17 @@ def trajectory_terrain_comparison(i, j, relative_cell):
     # calculate azimuth of trajectory (shooting point to cell point)
     Azimuth = np.arctan((relative_cell.GetX() - SP.GetX())/(relative_cell.GetY() - SP.GetY()))
     # cycle iterates from first point of trajectory to the first point of segment closest to the cell point
-    for X, Y in zip(TS[i][1][0][:j+1]):
+    for X, Y in zip(TS[i][1][0][:j+1],TS[i][1][1][:j+1]):
         X_compare_point = SP.GetX() + X * np.sin(Azimuth)
         Y_compare_point = SP.GetY() + X * np.cos(Azimuth)
         Z_compare_point = int_function(X_compare_point, Y_compare_point)
+        # if trajectory point is on or below terrain, False is returned
         if Y <= Z_compare_point:
+            # there is a slight chance of the last point being within allowed distance radius of cell point which would make the cell hittable, not the opposite
+            if not np.round(((X-relative_cell.GetX())**2+(Y-relative_cell.GetY())**2)**(1/2)/TSW):
+                return True
             return False
+    # if no trajectory point gets on or below terrain, cell is considered reachable, therefore True is returned
     return True
 
 def plot_trajectory():
@@ -569,8 +614,8 @@ def plot_trajectory():
 
     plt.plot(envelope[0], envelope[1], '-', linewidth=1)
     plt.plot([0, max(TS, key=lambda x: x[1][0][-1])[1][0][-1]], [DMAXH, DMAXH], '-', linewidth=1)
-    plt.plot(ATF[0], ATF[1], '-', linewidth=3)
-    plt.plot(DTF[0], DTF[1], '-', linewidth=2)
+    # plt.plot(ATF[0], ATF[1], '-', linewidth=3)
+    # plt.plot(DTF[0], DTF[1], '-', linewidth=2)
     print(i)
     #plt.plot(temp_xyp[0], temp_xyp[1], 'r.', markersize=2)
     # xpar = max(TS, key=lambda x: x[1][0][-1])[1][0][-1]
@@ -617,9 +662,9 @@ EPSG = 8353 #EPSG code for CRS of output throwshed layer and other temporary res
 ## VARIABLES
 initial_height = 1.7 #initial height of projectile above DEM when shot [m]
 alpha_min = 0.0 #minimum of vertical angle range at which the projectile is shot [°]
-alpha_max = 45.0 #maximum of vertical angle range at which the projectile is shot [°]
+alpha_max = 90.0 #maximum of vertical angle range at which the projectile is shot [°]
 gravitational_acceleration = -9.81 #gravitational acceleration [m/s^2]
-initial_velocity = 30 #initial velocity of projectile when shot [m/s]
+initial_velocity = 10 #initial velocity of projectile when shot [m/s]
 air_density = 1.225 #air density [kg/m^3]
 drag_coefficient = 2.0 #aerodynamic drag coefficient of projectile
 cross_sectional_area = 0.000050 #cross-sectional area of the projectile [m^2]
