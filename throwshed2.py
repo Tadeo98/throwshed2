@@ -160,11 +160,15 @@ def throwshed(point_geom, k):
     global SP
     # create shooting point with Z coordinate that is interpolated from DEM
     SP = ogr.Geometry(ogr.wkbPoint)
-    SP.AddPoint(point_geom.GetX(), point_geom.GetY(), float(int_function(point_geom.GetX(), point_geom.GetY())))
+    SP.AddPoint(point_geom.GetX(), point_geom.GetY(), float(int_function(point_geom.GetX(), point_geom.GetY()))+IH)
     # generate set of trajectories for vertical angle range with basic step
     trajectory_simple_set()
     # insert trajectories between those from simple set, to ensure throwshed's edge accuracy
     trajectory_initial_set()
+
+    plot_trajectory()
+    exit()
+
     # define Ascending and Descending Trajectory Fields
     create_trajectory_fields()
     # Assign values into arrays of 2 bands (ATF and DTF)
@@ -206,7 +210,7 @@ def generate_trajectory(alpha):
     # initial projectile velocity
     V = IV
     # list of all trajectory points' coordinates
-    points = [[0.0], [IH + SP.GetZ()]]
+    points = [[0.0], [SP.GetZ()]]
     # velocity x and y elements
     V_x = V * np.cos(alpha)
     V_y = V * np.sin(alpha)
@@ -612,8 +616,14 @@ def plot_trajectory():
         #plt.plot(TS[i][1][0], TS[i][1][1], markersize=5, linewidth=1, label=TS[i][0]/np.pi*180)
         plt.plot(TS[i][1][0], TS[i][1][1], '-', linewidth=1)
 
-    plt.plot(envelope[0], envelope[1], '-', linewidth=1)
+    #plt.plot(envelope[0], envelope[1], '-', linewidth=1)
     plt.plot([0, max(TS, key=lambda x: x[1][0][-1])[1][0][-1]], [DMAXH, DMAXH], '-', linewidth=1)
+
+    end_cell = ogr.Geometry(ogr.wkbPoint)
+    end_cell.AddPoint(SP.GetX(),SP.GetY()-100)
+    profile = get_profile(end_cell)
+    plt.plot(profile[0], profile[1], '-', linewidth=3)
+
     # plt.plot(ATF[0], ATF[1], '-', linewidth=3)
     # plt.plot(DTF[0], DTF[1], '-', linewidth=2)
     print(i)
@@ -631,8 +641,8 @@ def plot_trajectory():
     # plt.plot(x, y, 'b*', markersize=1)
 
     # ohranicenie, popis osi a nastavenie rovnakej mierky v smere oboch osi
-    plt.xlim(0, 210)
-    plt.ylim(300, 510)
+    plt.xlim(0, profile[0][-1])
+    plt.ylim(min(profile[1])-10, max(profile[1])+20)
     plt.xlabel("vzdialenosť [m]")
     plt.ylabel("výška [m]")
     plt.gca().set_aspect('equal', adjustable='box')
@@ -641,6 +651,20 @@ def plot_trajectory():
     #plt.legend()
     plt.savefig('filename.png', dpi=900)
     plt.show()
+
+def get_profile(end_cell):
+    Azimuth = np.arctan((end_cell.GetX() - SP.GetX())/(end_cell.GetY() - SP.GetY()))
+    profile = [[],[]]
+    s = 0
+    cell_dist = ((SP.GetX() - end_cell.GetX()) ** 2 + (SP.GetY() - end_cell.GetY()) ** 2) ** (1 / 2)
+    while s < cell_dist:
+        X_compare_point = SP.GetX() + s * np.sin(Azimuth)
+        Y_compare_point = SP.GetY() + s * np.cos(Azimuth)
+        Z_compare_point = int_function(X_compare_point, Y_compare_point)
+        profile[0].append(s)
+        profile[1].append(Z_compare_point)
+        s += 0.5
+    return profile
 
 
 
@@ -664,7 +688,7 @@ initial_height = 1.7 #initial height of projectile above DEM when shot [m]
 alpha_min = 0.0 #minimum of vertical angle range at which the projectile is shot [°]
 alpha_max = 90.0 #maximum of vertical angle range at which the projectile is shot [°]
 gravitational_acceleration = -9.81 #gravitational acceleration [m/s^2]
-initial_velocity = 10 #initial velocity of projectile when shot [m/s]
+initial_velocity = 30 #initial velocity of projectile when shot [m/s]
 air_density = 1.225 #air density [kg/m^3]
 drag_coefficient = 2.0 #aerodynamic drag coefficient of projectile
 cross_sectional_area = 0.000050 #cross-sectional area of the projectile [m^2]
