@@ -165,10 +165,6 @@ def throwshed(point_geom, k):
     trajectory_simple_set()
     # insert trajectories between those from simple set, to ensure throwshed's edge accuracy
     trajectory_initial_set()
-
-    plot_trajectory()
-    exit()
-
     # define Ascending and Descending Trajectory Fields
     create_trajectory_fields()
     # Assign values into arrays of 2 bands (ATF and DTF)
@@ -439,7 +435,7 @@ def update_envelope(ITR, XIIPR, XII, YII):
 
 def create_trajectory_fields():
     """Creates ATF - Ascending Trajectory Field and DTF - Descending Trajectory Field. Lists are made into polygons."""
-    global ATF_polygon, DTF_polygon
+    global ATF_polygon, DTF_polygon, ATF, DTF
     ATF_polygon, DTF_polygon = None, None
     ATF, DTF = [[], []], [[], []]
     # in this case DTF does not exist
@@ -458,7 +454,7 @@ def create_trajectory_fields():
         ATF[0] = TS[0][1][0] + envelope[0] + TS[-1][1][0][i::-1]
         ATF[1] = TS[0][1][1] + envelope[1] + TS[-1][1][1][i::-1]
         # but for DTF with last trajectory shooting angle being 90 degrees, i is edited so that only last point down at min DEM height is added to polygon
-        i = -2 if TS[-1][0] == AL[-1] else i
+        i = -2 if TS[-1][0] == np.radians(90) else i
         DTF[0] = envelope[0] + TS[-1][1][0][i+1:] + envelope[0][:1]
         DTF[1] = envelope[1] + TS[-1][1][1][i+1:] + envelope[1][:1]
         # create polygons out of the lists
@@ -496,18 +492,21 @@ def assign_values_to_throwshed(k):
             cell_distance = ((SP.GetX() - X_coor_cell)**2 + (SP.GetY()-Y_coor_cell)**2)**(1/2)
             # create cell point with relative coordinates in the plane of trajectories and find out whether it's within the field, if so, further actions are conducted
             relative_cell = ogr.Geometry(ogr.wkbPoint)
+            # also create cell point with absolute coordinates in the plane of projection plane, will be used in terrain comparison to calculate azimuth
+            absolute_cell = ogr.Geometry(ogr.wkbPoint)
             relative_cell.AddPoint(cell_distance, float(DA[i][j]))
+            absolute_cell.AddPoint(X_coor_cell, Y_coor_cell)
             # call function to find cell intersecting trajectory and to determine whether the cell is reachable without any obstacles
             if relative_cell.Within(ATF_polygon):
-                if find_intersecting_trajectory(1, -1, -1, -1, relative_cell):
+                if find_intersecting_trajectory(1, -1, -1, -1, relative_cell, absolute_cell):
                     TA[0][i][j] += 1
             # can be None
             if DTF_polygon:
                 if relative_cell.Within(DTF_polygon):
-                    if find_intersecting_trajectory(-1, len(TS), len(TS), len(TS), relative_cell):
+                    if find_intersecting_trajectory(-1, len(TS), len(TS), len(TS), relative_cell, absolute_cell):
                         TA[1][i][j] += 1
 
-def find_intersecting_trajectory(step, i, i1, i2, relative_cell):
+def find_intersecting_trajectory(step, i, i1, i2, relative_cell, absolute_cell):
     """Finds trajectory that intersects the cell (or is close enough, within allowed distance). For ATF cycle
     increments from start to end of trajectory set and viceversa for DTF. Returns True if the cell is accessible
     or False if the cell is not accessible without any obstacles - this is determined further function."""
@@ -563,7 +562,7 @@ def find_intersecting_trajectory(step, i, i1, i2, relative_cell):
                     i += step
                     break
             break
-    return trajectory_terrain_comparison(i, j, relative_cell)
+    return trajectory_terrain_comparison(i, j, relative_cell, absolute_cell)
 
 def compute_normal(i, X_relative_cell, Y_relative_cell):
     """Computes perpendicular distance from closest segment of given trajectory and returns its size as well as index
@@ -589,11 +588,26 @@ def compute_normal(i, X_relative_cell, Y_relative_cell):
     area = (s * (s - a) * (s - b) * (s - c)) ** (1 / 2)
     return area / c * 2, j
 
-def trajectory_terrain_comparison(i, j, relative_cell):
+def trajectory_terrain_comparison(i, j, relative_cell, absolute_cell):
     """Computes coordinates of terrain corresponding to each trajectory point and returns True or False depending
     on the result of terrain and trajectory point heights comparison."""
-    # calculate azimuth of trajectory (shooting point to cell point)
-    Azimuth = np.arctan((relative_cell.GetX() - SP.GetX())/(relative_cell.GetY() - SP.GetY()))
+    # calculate azimuth of trajectory (shooting point to cell point), there is a chance of Y difference to be 0, therefore the exception
+    dX = absolute_cell.GetX() - SP.GetX()
+    dY = absolute_cell.GetY() - SP.GetY()
+    try:
+        Azimuth = np.arctan(dX / dY)
+    except ZeroDivisionError:
+        # for the case of dY being 0, making the division impossible
+        if dX > 0:
+            Azimuth = np.radians(90)
+        else:
+            Azimuth = np.radians(270)
+    # azimuth needs to be recalculated accordingly to correct quadrant
+    if dY > 0:
+        if dX < 0:
+            Azimuth += np.radians(360)
+    elif dY < 0:
+        Azimuth += np.radians(180)
     # cycle iterates from first point of trajectory to the first point of segment closest to the cell point
     for X, Y in zip(TS[i][1][0][:j+1],TS[i][1][1][:j+1]):
         X_compare_point = SP.GetX() + X * np.sin(Azimuth)
@@ -614,18 +628,18 @@ def plot_trajectory():
     for i in range(len(TS)):
         # plotting the points
         #plt.plot(TS[i][1][0], TS[i][1][1], markersize=5, linewidth=1, label=TS[i][0]/np.pi*180)
-        plt.plot(TS[i][1][0], TS[i][1][1], '-', linewidth=1)
+        plt.plot(TS[i][1][0], TS[i][1][1], '.-', linewidth=1)
 
     #plt.plot(envelope[0], envelope[1], '-', linewidth=1)
     plt.plot([0, max(TS, key=lambda x: x[1][0][-1])[1][0][-1]], [DMAXH, DMAXH], '-', linewidth=1)
 
     end_cell = ogr.Geometry(ogr.wkbPoint)
-    end_cell.AddPoint(SP.GetX(),SP.GetY()-100)
+    end_cell.AddPoint(-488566.5,-1258948.5)
     profile = get_profile(end_cell)
     plt.plot(profile[0], profile[1], '-', linewidth=3)
 
-    # plt.plot(ATF[0], ATF[1], '-', linewidth=3)
-    # plt.plot(DTF[0], DTF[1], '-', linewidth=2)
+    plt.plot(ATF[0], ATF[1], '-', linewidth=2)
+    plt.plot(DTF[0], DTF[1], '-', linewidth=2)
     print(i)
     #plt.plot(temp_xyp[0], temp_xyp[1], 'r.', markersize=2)
     # xpar = max(TS, key=lambda x: x[1][0][-1])[1][0][-1]
@@ -641,7 +655,7 @@ def plot_trajectory():
     # plt.plot(x, y, 'b*', markersize=1)
 
     # ohranicenie, popis osi a nastavenie rovnakej mierky v smere oboch osi
-    plt.xlim(0, profile[0][-1])
+    plt.xlim(0, profile[0][-1]+5)
     plt.ylim(min(profile[1])-10, max(profile[1])+20)
     plt.xlabel("vzdialenosť [m]")
     plt.ylabel("výška [m]")
@@ -653,20 +667,37 @@ def plot_trajectory():
     plt.show()
 
 def get_profile(end_cell):
-    Azimuth = np.arctan((end_cell.GetX() - SP.GetX())/(end_cell.GetY() - SP.GetY()))
-    profile = [[],[]]
+    dX = end_cell.GetX() - SP.GetX()
+    dY = end_cell.GetY() - SP.GetY()
+    print(dX, dY)
+    try:
+        Azimuth = np.arctan(dX / dY)
+    except ZeroDivisionError:
+        # for the case of dY being 0, making the division impossible
+        if dX > 0:
+            Azimuth = np.radians(90)
+        else:
+            Azimuth = np.radians(270)
+            # azimuth needs to be recalculated accordingly to correct quadrant
+    if dY > 0:
+        if dX < 0:
+            Azimuth += np.radians(360)
+    elif dY < 0:
+        Azimuth += np.radians(180)
+    print(np.degrees(Azimuth))
+    profile = [[0],[SP.GetZ()-IH]]
     s = 0
     cell_dist = ((SP.GetX() - end_cell.GetX()) ** 2 + (SP.GetY() - end_cell.GetY()) ** 2) ** (1 / 2)
-    while s < cell_dist:
+    while True:
+        s += 0.5
         X_compare_point = SP.GetX() + s * np.sin(Azimuth)
         Y_compare_point = SP.GetY() + s * np.cos(Azimuth)
         Z_compare_point = int_function(X_compare_point, Y_compare_point)
         profile[0].append(s)
         profile[1].append(Z_compare_point)
-        s += 0.5
+        if s > cell_dist:
+            break
     return profile
-
-
 
 #######################################################################
 ## PATHS
@@ -685,7 +716,7 @@ EPSG = 8353 #EPSG code for CRS of output throwshed layer and other temporary res
 
 ## VARIABLES
 initial_height = 1.7 #initial height of projectile above DEM when shot [m]
-alpha_min = 0.0 #minimum of vertical angle range at which the projectile is shot [°]
+alpha_min = -90.0 #minimum of vertical angle range at which the projectile is shot [°]
 alpha_max = 90.0 #maximum of vertical angle range at which the projectile is shot [°]
 gravitational_acceleration = -9.81 #gravitational acceleration [m/s^2]
 initial_velocity = 30 #initial velocity of projectile when shot [m/s]
