@@ -9,7 +9,7 @@ from osgeo import gdal, ogr, osr
 #######################################################################
 ## FUNCTIONS
 
-def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG,
+def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, throwshed_mode, use_viewshed, EPSG,
          cumulative_throwshed, initial_height, initial_velocity, drag_coefficient, cross_sectional_area, mass,
          eyes_height, target_height, wall_height, constant, area_addition, wobble_distance, band_number=1,
          interpolation=1, alpha_min=-90.0, alpha_max=90.0, gravitational_acceleration=-9.81, air_density=1.225, dalpha=5,
@@ -20,15 +20,15 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
         print("Minimal vertical shooting angle higher than maximal.")
         exit()
     # Global variables
-    global SRS, DP, PLP, LLP, TOF, TF, UV, CV, BN, INT, BF, VF, TSW, AL, DDS, DB, DA, DGT, DMINH, DMAXH, IH, IV, DC, \
-        CSA, M, CONST, AA, WD, GA, AD, EH, TH, NDV, TA
+    global SRS, DP, PLP, LLP, TOF, TF, TM, UV, CT, BN, INT, BF, TSW, AL, DDS, DB, DA, DGT, DMINH, DMAXH, IH, IV, \
+        DC, CSA, M, CONST, AA, WD, GA, AD, EH, TH, NDV, TA, VDS, VB, VA, VGT
     # CRS and other variable definition
     SRS = osr.SpatialReference()
     SRS.ImportFromEPSG(EPSG)
-    TOF, TF, UV, CV, BN, INT, VF, IH, IV, DC, CSA, M, CONST, AA, WD, GA, AD, EH, TH = throwshed_output_folder,\
-        throwshed_file, use_viewshed, cumulative_throwshed, band_number, interpolation, 'viewshed', initial_height, \
-        initial_velocity, drag_coefficient, cross_sectional_area, mass, constant, area_addition, wobble_distance, \
-        gravitational_acceleration, air_density, eyes_height, target_height
+    TOF, TF, TM, UV, CT, BN, INT, IH, IV, DC, CSA, M, CONST, AA, WD, GA, AD, EH, TH = throwshed_output_folder,\
+        throwshed_file, throwshed_mode, use_viewshed, cumulative_throwshed, band_number, interpolation, \
+        initial_height, initial_velocity, drag_coefficient, cross_sectional_area, mass, constant, area_addition, \
+        wobble_distance, gravitational_acceleration, air_density, eyes_height, target_height
     # get DEM data and assign them as global (and referencing datasource)
     DDS, DB, DA, DGT, NDV = get_raster_from_file(dem_path)
     # assign trajectory segment width
@@ -49,13 +49,13 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
     for i, point_geom in enumerate(point_geom_list):
         # compute throwshed for 1 point
         throwshed(point_geom, i)
-        #plot_trajectory()
-        break
+        # temporary viewshed files have to be removed
+        if UV:
+            VDS = VB = VA = VGT = None
+            os.remove(TOF + "\\viewshed.tif")
     # finally, array is written into band of output throwshed raster
     create_raster_file(TF, TA, 1, gdal.GDT_Int16)
     DDS = DB = DA = DGT = NDV = None
-
-
 
 def get_raster_from_file(file_path):
     """Get DEM datasource, band, array and geotransformation data and nodata value"""
@@ -167,6 +167,8 @@ def throwshed(point_geom, k):
     trajectory_initial_set()
     # define Ascending and Descending Trajectory Fields
     create_trajectory_fields()
+    if UV:
+        create_viewshed()
     # Assign values into arrays of 2 bands (ATF and DTF)
     assign_values_to_throwshed(k)
 
@@ -482,10 +484,16 @@ def assign_values_to_throwshed(k):
             if TA[0][i][j] == NDV:
                 continue
             # nodata value is assigned to both arrays for both bands (ATF and DTF)
-            if k == 0 and DA[i][j] == NDV:
-                TA[0][i][j] = NDV
-                TA[1][i][j] = NDV
+            if not k and DA[i][j] == NDV:
+                TA[0][i][j] = TA[1][i][j] = NDV
                 continue
+            # for simple throwshed, if cell already has value 1, cycle continues with following cell, otherwise for cumulative throwshed, cell is assessed
+            if k and CT == 0 and TA[0][i][j]:
+                continue
+            # if viewshed is incorporated and particular cell is not visible, nothing is added to throwshed cell, and for visible cells the algorithm proceeds with assessment of cells
+            if UV:
+                if not VA[i][j]:
+                    continue
             # calculate coordinates of cell's middle point and its horizontal distance from shooting point
             X_coor_cell = DGT[0]+(j+1/2)*DGT[1]
             Y_coor_cell = DGT[3]+(i+1/2)*DGT[5]
@@ -496,14 +504,22 @@ def assign_values_to_throwshed(k):
             absolute_cell = ogr.Geometry(ogr.wkbPoint)
             relative_cell.AddPoint(cell_distance, float(DA[i][j]))
             absolute_cell.AddPoint(X_coor_cell, Y_coor_cell)
-            # call function to find cell intersecting trajectory and to determine whether the cell is reachable without any obstacles
+            # detect cell within the fields and call function to find cell intersecting trajectory and to determine whether the cell is reachable without any obstacles
             if relative_cell.Within(ATF_polygon):
-                if find_intersecting_trajectory(1, -1, -1, -1, relative_cell, absolute_cell):
+                if TM:
+                    if find_intersecting_trajectory(1, -1, -1, -1, relative_cell, absolute_cell):
+                        TA[0][i][j] += 1
+                # for the case only cell's presence within the field is assessed
+                else:
                     TA[0][i][j] += 1
             # can be None
             if DTF_polygon:
                 if relative_cell.Within(DTF_polygon):
-                    if find_intersecting_trajectory(-1, len(TS), len(TS), len(TS), relative_cell, absolute_cell):
+                    if TM:
+                        if find_intersecting_trajectory(-1, len(TS), len(TS), len(TS), relative_cell, absolute_cell):
+                            TA[1][i][j] += 1
+                    # for the case only cell's presence within the field is assessed
+                    else:
                         TA[1][i][j] += 1
 
 def find_intersecting_trajectory(step, i, i1, i2, relative_cell, absolute_cell):
@@ -622,6 +638,14 @@ def trajectory_terrain_comparison(i, j, relative_cell, absolute_cell):
     # if no trajectory point gets on or below terrain, cell is considered reachable, therefore True is returned
     return True
 
+def create_viewshed():
+    """Computes viewshed for one point which is saved temporarily, then load as an array."""
+    global VDS, VB, VA, VGT
+    # generate viewshed and save it as temporary file to throwshed directory
+    gdal.ViewshedGenerate(srcBand=DB, driverName='GTiff', targetRasterName=TOF + "\\viewshed.tif", creationOptions=[], observerX=SP.GetX(), observerY=SP.GetY(), observerHeight=EH, targetHeight=TH, visibleVal=1, invisibleVal=0, outOfRangeVal=0, noDataVal=NDV, dfCurvCoeff=0.85714, mode=2, maxDistance=0)
+    # open viewshed raster, Viewshed Array will be crucial
+    VDS, VB, VA, VGT, ndv = get_raster_from_file(TOF + "\\viewshed.tif")
+
 def plot_trajectory():
     import matplotlib.pyplot as plt  # na vykreslenie grafov
     plt.figure(figsize=(32, 18))
@@ -701,13 +725,14 @@ def get_profile(end_cell):
 
 #######################################################################
 ## PATHS
-dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\dem\dmr_clip2.tif" #path to DEM
+dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\dem\dmr_clip4.tif" #path to DEM
 point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\point\points1.shp"   #path to point layer
 line_layer_path = None #r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\line\lines1.shp" #path to line layer, if obstacles are not to be used, set to None
 throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\throwshed"  #path to folder, where the file will be saved
 throwshed_file = r"throwshedtestnew"   #name of output throwshed file
 
 ## SETTINGS
+throwshed_mode = 0 #what type of throwshed will be calculated, simple safety zone (cells within safety field) = 0, regular throwshed with trajectory assessment = 1
 use_viewshed = 1 #utilization of viewshed, that will clip throwshed, No = 0, Yes = 1
 band_number = 1 #selected band from DEM, default = 1
 interpolation = 0 #interpolation of DEM to calculate altitude of shooting point or compare points within the DEM-to-trajectory comparison function, Nearest neighbour = 0, Bilinear = 1
@@ -734,7 +759,7 @@ area_addition = 0.0 #average addition to cross-sectional area of an arrow within
 wobble_distance = 40 #wobble distance - distance at which an arrow stops wobbling [m]
 
 
-main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, use_viewshed, EPSG,
+main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, throwshed_mode, use_viewshed, EPSG,
          cumulative_throwshed, initial_height, initial_velocity, drag_coefficient, cross_sectional_area, mass,
          eyes_height, target_height, wall_height, constant, area_addition, wobble_distance, band_number=band_number,
          interpolation=interpolation, alpha_min=alpha_min, alpha_max=alpha_max,
