@@ -319,19 +319,16 @@ def trajectory_initial_set():
             if not np.floor(TS[iti+1][1][0][TS[iti+1][1][1].index((max(TS[iti+1][1][1])))]/TSW):
                 # Initial Trajectory Reversed list (X and Y coords)
                 ITR = [TS[iti][1][0][-1::-1], TS[iti][1][1][-1::-1]]
-                # update envelope with points from initial trajectory of last cycle
-                update_envelope(ITR, XIIPR, XROI, YROI)
+                # update envelope with points from initial trajectory of last cycle, also update trajectory with shared part starting and ending point indexes (on trajectory as on envelope)
+                TS[iti].append(update_envelope(1, ITR, XIIPR, XROI, YROI, 0))
                 # Last Inserted Trajectory Reversed list (X and Y coords)
                 LITR = [TS[iti+1][1][0][-1::-1], TS[iti+1][1][1][-1::-1]]
-                # last points from last inserted trajectory and highest point of last trajectory are appended to envelope
-                for x, y in zip(LITR[0], LITR[1]):
-                    if y > YROI:
-                        envelope[0].append(x)
-                        envelope[1].append(y)
-                    if x == TS[iti+1][1][0][TS[iti+1][1][1].index((max(TS[iti+1][1][1])))]:
-                        break
+                # update last but one trajectory with shared part starting and ending point indexes (on trajectory as on envelope)
+                TS[iti+1].append(update_envelope(0, LITR, 0, 0, 0, YROI))
                 envelope[0].append(0)
                 envelope[1].append(max(TS[-1][1][1]))
+                # update last trajectory (90 degrees one) with shared part starting and ending point indexes (on trajectory as on envelope)
+                TS[iti + 2].append([[TS[iti+2][1][1].index((max(TS[iti+2][1][1]))), TS[iti+2][1][1].index((max(TS[iti+2][1][1])))], [len(envelope[0])-1, len(envelope[0])-1]])
                 break
             # if not dense enough, density will be accomplished with new iteration
             else:
@@ -356,14 +353,17 @@ def trajectory_initial_set():
             del TS[iti+1]
             # initial trajectory reversed list (X and Y coords)
             ITR = [TS[iti][1][0][-1::-1], TS[iti][1][1][-1::-1]]
-            # update envelope
-            update_envelope(ITR, XIIPR, XII, YII)
+            # update envelope and update trajectory list with starting and ending point index of shared part between trajectory and envelope, indexes will be used when looking for cell neighbouring trajectories
+            TS[iti].append(update_envelope(1, ITR, XIIPR, XII, YII, 0))
             # previous intersection for next cycle is assigned
             XIIPR, YIIPR = XII, YII
             # at least one of the conditions was met and the cycle can jump to next initial trajectory
             iti += 1
             # if the cycle comes to last trajectory, it breaks as there is no following trajectory
             if TS[iti][0] == AL[-1]:
+                # even last trajectory needs to be updated with indexes
+                ITR = [TS[iti][1][0][-1::-1], TS[iti][1][1][-1::-1]]
+                TS[iti].append(update_envelope(0, ITR, 0, 0, 0, YII))
                 break
 
 def intersection_of_trajectories(t1i,t2i):
@@ -407,30 +407,60 @@ def calculate_intersection(x1, y1, x2, y2, x3, y3, x4, y4):
         (x3 - x4))
     return XI, YI
 
-def update_envelope(ITR, XIIPR, XII, YII):
-    """Updates envelope with parts of trajectories."""
+def update_envelope(method, ITR, XIIPR, XII, YII, YROI):
+    """Updates envelope with parts of trajectories and returns starting and ending indexes of points on part of
+    trajectory that is shared with the envelope and also indexes of points on envelope that are boundaries of the
+    shared trajectory part (previous and actual inner intersections). Trajectory points have to be between the envelope
+    points."""
     global envelope
-    # on reversed trajectory, index of first point that will be incorporated within the envelope is found
-    for i in range(len(ITR[0]) - 1):
-        if ITR[0][i] >= XIIPR >= ITR[0][i + 1]:
-            # Envelope Part Starting Point Index
-            EPSPI = i + 1
-            break
-    # on reversed trajectory, index of last point that will be incorporated within the envelope is found
-    for i in range(EPSPI - 1, len(ITR[0]) - 1):
-        if ITR[0][i] >= XII >= ITR[0][i + 1]:
-            # Envelope Part Ending Point Index
-            EPEPI = i
-            break
-    # condition for rare situation where both inner intersections could fall within one segment of trajectory
-    if EPEPI >= EPSPI:
-        # envelope is updated with all points between starting and ending point
-        for i in range(EPSPI, EPEPI + 1):
-            envelope[0].append(ITR[0][i])
-            envelope[1].append(ITR[1][i])
-    # lastly, envelope is updated with the inner intersection point
-    envelope[0].append(XII)
-    envelope[1].append(YII)
+    # for regular parts
+    if method:
+        # on reversed trajectory, index of first point that will be incorporated within the envelope is found
+        for i in range(len(ITR[0]) - 1):
+            if ITR[0][i] >= XIIPR >= ITR[0][i + 1]:
+                # Envelope Part Starting Point Index
+                EPSPI = i + 1
+                break
+        # on reversed trajectory, index of last point that will be incorporated within the envelope is found
+        for i in range(EPSPI - 1, len(ITR[0]) - 1):
+            if ITR[0][i] >= XII >= ITR[0][i + 1]:
+                # Envelope Part Ending Point Index
+                EPEPI = i
+                break
+        # starting envelope index as the index of envelope's last point before update
+        SEI = len(envelope[0]) - 1
+        # condition for rare situation where both inner intersections could fall within one segment of trajectory
+        if EPEPI >= EPSPI:
+            # envelope is updated with all points between starting and ending point
+            for i in range(EPSPI, EPEPI + 1):
+                envelope[0].append(ITR[0][i])
+                envelope[1].append(ITR[1][i])
+        # ending envelope index as the index of envelope's last point after update
+        EEI = len(envelope[0])
+        # lastly, envelope is updated with the inner intersection point
+        envelope[0].append(XII)
+        envelope[1].append(YII)
+        # return indexes of the first and last point of shared part, for trajectory direction of incrementing is from the left (shooting point), for envelope it's vice-versa
+        return [[len(ITR[0]) - 1 - EPSPI, len(ITR[0]) - 1 - EPEPI], [SEI, EEI]]
+    # for part of last but one trajectory when alpha of the last one is equal to 90° or part of last trajectory whose alpha is not equal to 90°
+    else:
+        # starting envelope index as the index of envelope's last point before update, for last but one trajectory
+        SEI = len(envelope[0]) - 1
+        # starting and ending last but one trajectory point indexes
+        EPSPI = 0
+        # last points from last inserted trajectory and highest point of last trajectory are appended to envelope
+        for i in range(len(ITR[0])):
+            if ITR[1][i] > YROI:
+                if not EPSPI:
+                    EPSPI = i
+                envelope[0].append(ITR[0][i])
+                envelope[1].append(ITR[1][i])
+            if ITR[0][i] == ITR[0][ITR[1].index((max(ITR[1])))]:
+                break
+        EPEPI = i - 1
+        # ending envelope index as the index of envelope's last point after update, for last but one trajectory
+        EEI = len(envelope[0]) - 1
+        return [[len(ITR[0]) - 1 - EPSPI, len(ITR[0]) - 1 - EPEPI], [SEI, EEI]]
 
 def create_trajectory_fields():
     """Creates ATF - Ascending Trajectory Field and DTF - Descending Trajectory Field. Lists are made into polygons."""
@@ -530,6 +560,15 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell, row, col):
     """Finds trajectory that intersects the cell (or is close enough, within allowed distance). For ATF cycle
     increments from start to end of trajectory set and viceversa for DTF. Returns True if the cell is accessible
     or False if the cell is not accessible without any obstacles - this is determined further function."""
+
+
+
+    print('dir:',dir)
+    zoom = 0
+
+
+
+
     # Most Distant Trajectory Index
     MDTI = TS.index((max(TS, key=lambda x: x[1][0][-1])))
     if dir == -1:
@@ -539,29 +578,100 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell, row, col):
         ZIL = [0, int(len(TS) / 2), len(TS) - 1]
     # cycle for zooming into the polygon of cell neighbouring trajectories
     while True:
+
+
+        zoom += 1
+
+
         for j in [0, 1]:
+
+
+
+            ZIL
+            print(j)
+
+
             if dir == -1:
                 # indexes of envelope (starting and ending) and trajectories where they intersect the envelope
-                i1e, i1t = find_common_point_index(ZIL[j],0,len(envelope[0]),1)
-                i2e, i2t = find_common_point_index(ZIL[j+1],0,len(envelope[0]),1)
+                # i1e, i1t = find_common_point_index(ZIL[j],0,len(envelope[0]),1)
+                # i2e, i2t = find_common_point_index(ZIL[j+1],0,len(envelope[0]),1)
                 # polygon also consists of envelope
-                polygon = create_polygon_from_coords_list([envelope[0][i1e:i2e] + TS[ZIL[j + 1]][1][0][i2t:] + TS[ZIL[j]][1][0][-1:i1t:-1] + envelope[0][i1e:i1e+1], envelope[1][i1e:i2e] + TS[ZIL[j + 1]][1][1][i2t:] + TS[ZIL[j]][1][1][-1:i1t:-1] + envelope[1][i1e:i1e+1]])
+
+
+                start1 = timer()
+                print('desc situation')
+                poly_list =[envelope[0][TS[ZIL[j]][2][1][0]+1:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][0]+1:] + TS[ZIL[j]][1][0][-1:TS[ZIL[j]][2][0][0]-1:-1], envelope[1][TS[ZIL[j]][2][1][0]+1:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][0]+1:] + TS[ZIL[j]][1][1][-1:TS[ZIL[j]][2][0][0]-1:-1]]
+                #plot_trajectory(relative_cell, absolute_cell, 0, row, col, dir, poly_list, j, zoom)
+
+                polygon = create_polygon_from_coords_list([envelope[0][TS[ZIL[j]][2][1][0]+1:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][0]+1:] + TS[ZIL[j]][1][0][-1:TS[ZIL[j]][2][0][0]-1:-1], envelope[1][TS[ZIL[j]][2][1][0]+1:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][0]+1:] + TS[ZIL[j]][1][1][-1:TS[ZIL[j]][2][0][0]-1:-1]])
+
+
+                end1 = timer()
+                print('desc polygon creation duration:', end1 - start1)
+
+
             else:
+
+                start1 = timer()
+
                 # very basic situation, envelope needs not to be used
                 if ZIL[j+1] <= MDTI:
                     polygon = create_polygon_from_coords_list([TS[ZIL[j]][1][0] + TS[ZIL[j + 1]][1][0][-1::-1], TS[ZIL[j]][1][1] + TS[ZIL[j + 1]][1][1][-1::-1]])
+
+
+                    print('asc simple situation')
+                    poly_list = [TS[ZIL[j]][1][0] + TS[ZIL[j + 1]][1][0][-1::-1], TS[ZIL[j]][1][1] + TS[ZIL[j + 1]][1][1][-1::-1]]
+                    #plot_trajectory(relative_cell, absolute_cell, 0, row, col, dir, poly_list, j, zoom)
+
+
                 # situation where at least second trajectory is already intersecting other trajectories with further reach
                 else:
                     # situation where first of the trajectories is the one with furthest reach or the ones following
                     if ZIL[j] >= MDTI:
-                        i1e, i1t = find_common_point_index(ZIL[j], len(envelope[0])-1, -1, -1)
-                        i2e, i2t = find_common_point_index(ZIL[j + 1], len(envelope[0])-1, -1, -1)
-                        polygon = create_polygon_from_coords_list([TS[ZIL[j]][1][0][:i1t] + envelope[0][i1e:i2e] + TS[ZIL[j + 1]][1][0][i2t::-1], TS[ZIL[j]][1][1][:i1t] + envelope[1][i1e:i2e] + TS[ZIL[j + 1]][1][1][i2t::-1]])
+                        # i1e, i1t = find_common_point_index(ZIL[j], len(envelope[0])-1, -1, -1)
+                        # i2e, i2t = find_common_point_index(ZIL[j + 1], len(envelope[0])-1, -1, -1)
+                        polygon = create_polygon_from_coords_list([TS[ZIL[j]][1][0][:TS[ZIL[j]][2][0][1]] + envelope[0][TS[ZIL[j]][2][1][1]:TS[ZIL[j+1]][2][1][1]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][1]-1::-1], TS[ZIL[j]][1][1][:TS[ZIL[j]][2][0][1]] + envelope[1][TS[ZIL[j]][2][1][1]:TS[ZIL[j+1]][2][1][1]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][1]-1::-1]])
+
+
+                        print('asc all beyond situation')
+                        poly_list = [TS[ZIL[j]][1][0][:TS[ZIL[j]][2][0][1]] + envelope[0][TS[ZIL[j]][2][1][1]:TS[ZIL[j+1]][2][1][1]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][1]-1::-1], TS[ZIL[j]][1][1][:TS[ZIL[j]][2][0][1]] + envelope[1][TS[ZIL[j]][2][1][1]:TS[ZIL[j+1]][2][1][1]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][1]-1::-1]]
+                        #plot_trajectory(relative_cell, absolute_cell, 0, row, col, dir, poly_list, j, zoom)
+
+
                     # situation where first of the trajectories precedes trajectory with furthest reach
                     else:
-                        i2e, i2t = find_common_point_index(ZIL[j + 1], len(envelope[0])-1, -1, -1)
-                        polygon = create_polygon_from_coords_list([TS[ZIL[j]][1][0] + envelope[0][:i2e] + TS[ZIL[j + 1]][1][0][i2t::-1], TS[ZIL[j]][1][1] + envelope[1][:i2e] + TS[ZIL[j + 1]][1][1][i2t::-1]])
+                        # i2e, i2t = find_common_point_index(ZIL[j + 1], len(envelope[0])-1, -1, -1)
+                        polygon = create_polygon_from_coords_list([TS[ZIL[j]][1][0] + envelope[0][:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][0]::-1], TS[ZIL[j]][1][1] + envelope[1][:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][0]::-1]])
+
+
+                        print('asc one below, one beyond situation')
+                        poly_list = [TS[ZIL[j]][1][0] + envelope[0][:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][0]::-1], TS[ZIL[j]][1][1] + envelope[1][:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][0]::-1]]
+                        #plot_trajectory(relative_cell, absolute_cell, 0, row, col, dir, poly_list, j, zoom)
+
+
+                    end1 = timer()
+                    print('asc polygon creation duration:', end1 - start1)
+
+
+
+            print('following polygon checks the point:')
+            plot_trajectory(relative_cell, absolute_cell, 0, row, col, dir, poly_list, j, zoom)
+
+
+
+            point = ogr.Geometry(ogr.wkbPoint)
+            point.AddPoint(20, 500)
+            if point.Within(polygon):
+                print('this one works')
+
+
+
             if relative_cell.Within(polygon):
+
+
+                print('lies within')
+
+
                 break
         if abs(ZIL[j + 1] - ZIL[j]) == 1:
             i = ZIL[j]
@@ -569,7 +679,11 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell, row, col):
         ZIL = [ZIL[j], int(ZIL[j] + (ZIL[j + 1] - ZIL[j]) / 2), ZIL[j + 1]]
 
 
-    plot_trajectory(relative_cell, absolute_cell, i, row, col, dir)
+    print(f'index:{i}, TS length: {len(TS)}')
+
+    #plot_trajectory(relative_cell, absolute_cell, i, row, col, dir, poly_list)
+
+
 
     # auxiliary indexes
     i1, i2 = -1, -1
@@ -630,6 +744,9 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell, row, col):
 
 def find_common_point_index(j, er1, er2, er3):
     """Returns indexes of trajectory and envelope points in which they intersect."""
+
+    start = timer()
+
     n = 0
     tr1 = len(TS[j][1][0])-1
     for ie in range(er1, er2, er3):
@@ -641,6 +758,10 @@ def find_common_point_index(j, er1, er2, er3):
                 break
         if n:
             break
+
+    end = timer()
+    print('common point procedure duration:', end - start)
+
     return ie, it
 
 def compute_normal(i, X_relative_cell, Y_relative_cell):
@@ -707,7 +828,7 @@ def create_viewshed():
     # open viewshed raster, Viewshed Array will be crucial
     VDS, VB, VA, VGT, ndv = get_raster_from_file(TOF + "\\viewshed.tif")
 
-def plot_trajectory(relative_cell, absolute_cell,j,row,col,dir):
+def plot_trajectory(relative_cell, absolute_cell,jj,row,col,dir, poly_list, j, zoom):
     import matplotlib.pyplot as plt  # na vykreslenie grafov
     plt.figure(figsize=(32, 18))
     for i in range(len(TS)):
@@ -723,8 +844,10 @@ def plot_trajectory(relative_cell, absolute_cell,j,row,col,dir):
     profile = get_profile(absolute_cell)
     plt.plot(profile[0], profile[1], '-', linewidth=3)
 
-    plt.plot(TS[j][1][0], TS[j][1][1], '-', linewidth=1)
-    plt.plot(TS[j+1][1][0], TS[j+1][1][1], '-', linewidth=1)
+    # plt.plot(TS[jj][1][0], TS[jj][1][1], '-', linewidth=1)
+    # plt.plot(TS[jj+1][1][0], TS[jj+1][1][1], '-', linewidth=1)
+
+    plt.plot(poly_list[0], poly_list[1], '-', linewidth=2)
 
     plt.plot(relative_cell.GetX(), relative_cell.GetY(), 'o', markersize=2)
 
@@ -746,7 +869,12 @@ def plot_trajectory(relative_cell, absolute_cell,j,row,col,dir):
 
     # ohranicenie, popis osi a nastavenie rovnakej mierky v smere oboch osi
     plt.xlim(0, 155)
-    plt.ylim(DMINH, DMAXH)
+    plt.ylim(DMINH, max(TS[-1][1][1]))
+
+    # plt.xlim(min(poly_list[0]), max(poly_list[0]))
+    # plt.ylim(min(poly_list[1]), max(poly_list[1]))
+
+
     plt.xlabel("vzdialenosť [m]")
     plt.ylabel("výška [m]")
     plt.gca().set_aspect('equal', adjustable='box')
@@ -755,7 +883,7 @@ def plot_trajectory(relative_cell, absolute_cell,j,row,col,dir):
     #plt.legend()
 
 
-    plt.savefig(f'filename{row}_{col}_{dir}.png', dpi=300)
+    plt.savefig(f'filename{row}_{col}_{dir}_zoom{zoom}_j{j}.png', dpi=300)
 
     start = timer()
     plt.show()
