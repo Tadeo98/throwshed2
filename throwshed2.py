@@ -49,7 +49,7 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
     for i, point_geom in enumerate(point_geom_list):
         # compute throwshed for 1 point
         throwshed(point_geom, i)
-        break
+        break #throwshed only for the first point is computed
         # temporary viewshed files have to be removed
         if UV:
             VDS = VB = VA = VGT = None
@@ -120,7 +120,6 @@ def burn_obstacles(line_layer_path, wall_height):
     dem_ds = None
     # delete all temporary files
     remove_temp_files(BFT)
-
 
 def create_outlayer(layer_name, geom):
     """Creates file for output layer, which will contain new features"""
@@ -315,8 +314,8 @@ def trajectory_initial_set():
         # if the last trajectory incorporated in cycle is the last one from the net with shooting angle value of 90 degrees.
         # This is because with 90 degrees trajectory left outer and inner intersections will be the same, which would lead to undesired behaviour
         if TS[iti+2][0] == np.radians(90):
-            # if X coordinate of highest point in newly created trajectory is less than TSW, last possible area of the net was made dense enough
-            if not np.floor(TS[iti+1][1][0][TS[iti+1][1][1].index((max(TS[iti+1][1][1])))]/TSW):
+            # if X coordinate of last point in newly created trajectory is less than TSW, last possible area of the net was made dense enough (used to be X of highest point, but last was chosen so that when searching for cell intersecting trajectories no trajectories are added if the cell falls between 2 last trajectories with the last having 90° angle, which would cause problems in rare situations)
+            if not np.floor(TS[iti+1][1][0][-1]/TSW):
                 # Initial Trajectory Reversed list (X and Y coords)
                 ITR = [TS[iti][1][0][-1::-1], TS[iti][1][1][-1::-1]]
                 # update envelope with points from initial trajectory of last cycle, also update trajectory with shared part starting and ending point indexes (on trajectory as on envelope)
@@ -506,9 +505,6 @@ def assign_values_to_throwshed(k):
     # cycle going through every single cell of DEM
     for i in range(DA.shape[0]):
         for j in range(DA.shape[1]):
-
-            start = timer()
-
             # with multiple shooting points nodata value can already be assigned to the cell, therefore the algorithm jumps to following cell
             if TA[0][i][j] == NDV:
                 continue
@@ -534,41 +530,27 @@ def assign_values_to_throwshed(k):
             relative_cell.AddPoint(cell_distance, float(DA[i][j]))
             absolute_cell.AddPoint(X_coor_cell, Y_coor_cell)
             # detect cell within the fields and call function to find cell intersecting trajectory and to determine whether the cell is reachable without any obstacles
-            if relative_cell.Within(ATF_polygon):
+            if ATF_polygon.Intersects(relative_cell):
                 if TM:
-                    if find_intersecting_trajectory(1, relative_cell, absolute_cell, i, j):
+                    if find_intersecting_trajectory(1, relative_cell, absolute_cell):
                         TA[0][i][j] += 1
                 # for the case only cell's presence within the field is assessed
                 else:
                     TA[0][i][j] += 1
             # can be None
             if DTF_polygon:
-                if relative_cell.Within(DTF_polygon):
+                if DTF_polygon.Intersects(relative_cell):
                     if TM:
-                        if find_intersecting_trajectory(-1, relative_cell, absolute_cell, i, j):
+                        if find_intersecting_trajectory(-1, relative_cell, absolute_cell):
                             TA[1][i][j] += 1
                     # for the case only cell's presence within the field is assessed
                     else:
                         TA[1][i][j] += 1
 
-
-            end = timer()
-            print(f'Cell overall {i} {j}:', end - start)
-            print()
-
-def find_intersecting_trajectory(dir, relative_cell, absolute_cell, row, col):
+def find_intersecting_trajectory(dir, relative_cell, absolute_cell):
     """Finds trajectory that intersects the cell (or is close enough, within allowed distance). For ATF cycle
     increments from start to end of trajectory set and viceversa for DTF. Returns True if the cell is accessible
     or False if the cell is not accessible without any obstacles - this is determined further function."""
-
-
-
-    print('dir:',dir)
-    zoom = 0
-
-
-
-
     # Most Distant Trajectory Index
     MDTI = TS.index((max(TS, key=lambda x: x[1][0][-1])))
     if dir == -1:
@@ -578,112 +560,28 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell, row, col):
         ZIL = [0, int(len(TS) / 2), len(TS) - 1]
     # cycle for zooming into the polygon of cell neighbouring trajectories
     while True:
-
-
-        zoom += 1
-
-
         for j in [0, 1]:
-
-
-
-            ZIL
-            print(j)
-
-
             if dir == -1:
-                # indexes of envelope (starting and ending) and trajectories where they intersect the envelope
-                # i1e, i1t = find_common_point_index(ZIL[j],0,len(envelope[0]),1)
-                # i2e, i2t = find_common_point_index(ZIL[j+1],0,len(envelope[0]),1)
-                # polygon also consists of envelope
-
-
-                start1 = timer()
-                print('desc situation')
-                poly_list =[envelope[0][TS[ZIL[j]][2][1][0]+1:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][0]+1:] + TS[ZIL[j]][1][0][-1:TS[ZIL[j]][2][0][0]-1:-1], envelope[1][TS[ZIL[j]][2][1][0]+1:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][0]+1:] + TS[ZIL[j]][1][1][-1:TS[ZIL[j]][2][0][0]-1:-1]]
-                #plot_trajectory(relative_cell, absolute_cell, 0, row, col, dir, poly_list, j, zoom)
-
+                # polygon also consists of envelope (starting and ending indexes of points of shared parts by trajectory and envelope are used)
                 polygon = create_polygon_from_coords_list([envelope[0][TS[ZIL[j]][2][1][0]+1:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][0]+1:] + TS[ZIL[j]][1][0][-1:TS[ZIL[j]][2][0][0]-1:-1], envelope[1][TS[ZIL[j]][2][1][0]+1:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][0]+1:] + TS[ZIL[j]][1][1][-1:TS[ZIL[j]][2][0][0]-1:-1]])
-
-
-                end1 = timer()
-                print('desc polygon creation duration:', end1 - start1)
-
-
             else:
-
-                start1 = timer()
-
                 # very basic situation, envelope needs not to be used
                 if ZIL[j+1] <= MDTI:
                     polygon = create_polygon_from_coords_list([TS[ZIL[j]][1][0] + TS[ZIL[j + 1]][1][0][-1::-1], TS[ZIL[j]][1][1] + TS[ZIL[j + 1]][1][1][-1::-1]])
-
-
-                    print('asc simple situation')
-                    poly_list = [TS[ZIL[j]][1][0] + TS[ZIL[j + 1]][1][0][-1::-1], TS[ZIL[j]][1][1] + TS[ZIL[j + 1]][1][1][-1::-1]]
-                    #plot_trajectory(relative_cell, absolute_cell, 0, row, col, dir, poly_list, j, zoom)
-
-
                 # situation where at least second trajectory is already intersecting other trajectories with further reach
                 else:
                     # situation where first of the trajectories is the one with furthest reach or the ones following
                     if ZIL[j] >= MDTI:
-                        # i1e, i1t = find_common_point_index(ZIL[j], len(envelope[0])-1, -1, -1)
-                        # i2e, i2t = find_common_point_index(ZIL[j + 1], len(envelope[0])-1, -1, -1)
                         polygon = create_polygon_from_coords_list([TS[ZIL[j]][1][0][:TS[ZIL[j]][2][0][1]] + envelope[0][TS[ZIL[j]][2][1][1]:TS[ZIL[j+1]][2][1][1]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][1]-1::-1], TS[ZIL[j]][1][1][:TS[ZIL[j]][2][0][1]] + envelope[1][TS[ZIL[j]][2][1][1]:TS[ZIL[j+1]][2][1][1]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][1]-1::-1]])
-
-
-                        print('asc all beyond situation')
-                        poly_list = [TS[ZIL[j]][1][0][:TS[ZIL[j]][2][0][1]] + envelope[0][TS[ZIL[j]][2][1][1]:TS[ZIL[j+1]][2][1][1]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][1]-1::-1], TS[ZIL[j]][1][1][:TS[ZIL[j]][2][0][1]] + envelope[1][TS[ZIL[j]][2][1][1]:TS[ZIL[j+1]][2][1][1]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][1]-1::-1]]
-                        #plot_trajectory(relative_cell, absolute_cell, 0, row, col, dir, poly_list, j, zoom)
-
-
                     # situation where first of the trajectories precedes trajectory with furthest reach
                     else:
-                        # i2e, i2t = find_common_point_index(ZIL[j + 1], len(envelope[0])-1, -1, -1)
                         polygon = create_polygon_from_coords_list([TS[ZIL[j]][1][0] + envelope[0][:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][0]::-1], TS[ZIL[j]][1][1] + envelope[1][:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][0]::-1]])
-
-
-                        print('asc one below, one beyond situation')
-                        poly_list = [TS[ZIL[j]][1][0] + envelope[0][:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][0]::-1], TS[ZIL[j]][1][1] + envelope[1][:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][0]::-1]]
-                        #plot_trajectory(relative_cell, absolute_cell, 0, row, col, dir, poly_list, j, zoom)
-
-
-                    end1 = timer()
-                    print('asc polygon creation duration:', end1 - start1)
-
-
-
-            print('following polygon checks the point:')
-            plot_trajectory(relative_cell, absolute_cell, 0, row, col, dir, poly_list, j, zoom)
-
-
-
-            point = ogr.Geometry(ogr.wkbPoint)
-            point.AddPoint(20, 500)
-            if point.Within(polygon):
-                print('this one works')
-
-
-
-            if relative_cell.Within(polygon):
-
-
-                print('lies within')
-
-
+            if polygon.Intersects(relative_cell):
                 break
         if abs(ZIL[j + 1] - ZIL[j]) == 1:
             i = ZIL[j]
             break
         ZIL = [ZIL[j], int(ZIL[j] + (ZIL[j + 1] - ZIL[j]) / 2), ZIL[j + 1]]
-
-
-    print(f'index:{i}, TS length: {len(TS)}')
-
-    #plot_trajectory(relative_cell, absolute_cell, i, row, col, dir, poly_list)
-
-
 
     # auxiliary indexes
     i1, i2 = -1, -1
@@ -696,7 +594,7 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell, row, col):
     # at first, 2 surrounding trajectories are found by making polygon out of them and asking whether the cell lies within
     while True:
         # if the cell lies within, normals are computed to assess the smallest perpendicular distance from trajectory to cell
-        if relative_cell.Within(polygon):
+        if polygon.Intersects(relative_cell):
             # Inserted Trajectories Starting Index
             if ITSI == -1:
                 ITSI = i+1
@@ -725,7 +623,7 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell, row, col):
             # ratio for angle addition to angle of previous trajectory, if one of the trajectories is already intersecting, second one is being searched by halving the angle difference of surrounding trajectories, because by normal ratio new trajectory can fall on wrong side of the cell, to the one that has already been assessed, which will slow down the computation
             ratio = 1 / 2 if not ITF[0] or not ITF[1] else normal1 / (normal1 + normal2)
             # new alpha calculated from the ratio and new trajectory is generated
-            new_alpha = TS[i][0] + abs(TS[i][0] - TS[i + 1][0]) * ratio
+            new_alpha = TS[i][0] + (TS[i + 1][0] - TS[i][0]) * ratio
             TS.insert(i + 1, [new_alpha, generate_trajectory(new_alpha)])
             # index i needs to be set one less to start again at the same trajectory
             # auxiliary index i1/2 to find out if the normal1/2 was already computed, will be used in next iteration
@@ -735,34 +633,8 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell, row, col):
             # 1 trajectory added to the index span
             ITIS += 1
         i += 1
-        # create polygon specially for the last two trajectories when looking for ascending or first two when looking for descending trajectory if the last one has shooting angle 90 degrees
-        if i == len(TS) - 2 and TS[-1][0] == np.radians(90):
-            polygon = create_polygon_from_coords_list([TS[i][1][0][:TS[i][1][1].index((max(TS[i][1][1]))) + 1] +TS[i + 1][1][0][TS[i + 1][1][1].index((max(TS[i + 1][1][1])))::-1],TS[i][1][1][:TS[i][1][1].index((max(TS[i][1][1]))) + 1] + TS[i + 1][1][1][TS[i + 1][1][1].index((max(TS[i + 1][1][1])))::-1]])
-        # or create polygon regularly
-        else:
-            polygon = create_polygon_from_coords_list([TS[i][1][0] + TS[i + 1][1][0][-1::-1], TS[i][1][1] + TS[i + 1][1][1][-1::-1]])
-
-def find_common_point_index(j, er1, er2, er3):
-    """Returns indexes of trajectory and envelope points in which they intersect."""
-
-    start = timer()
-
-    n = 0
-    tr1 = len(TS[j][1][0])-1
-    for ie in range(er1, er2, er3):
-        for it in range(tr1, -1, -1):
-            if envelope[0][ie] > TS[j][1][0][it]:
-                break
-            if envelope[0][ie] == TS[j][1][0][it] and envelope[1][ie] == TS[j][1][1][it]:
-                n = 1
-                break
-        if n:
-            break
-
-    end = timer()
-    print('common point procedure duration:', end - start)
-
-    return ie, it
+        # create polygon with inserted trajectory/ies
+        polygon = create_polygon_from_coords_list([TS[i][1][0] + TS[i + 1][1][0][-1::-1], TS[i][1][1] + TS[i + 1][1][1][-1::-1]])
 
 def compute_normal(i, X_relative_cell, Y_relative_cell):
     """Computes perpendicular distance from closest segment of given trajectory and returns its size as well as index
@@ -794,6 +666,9 @@ def trajectory_terrain_comparison(i, relative_cell, absolute_cell):
     # calculate azimuth of trajectory (shooting point to cell point), there is a chance of Y difference to be 0, therefore the exception
     dX = absolute_cell.GetX() - SP.GetX()
     dY = absolute_cell.GetY() - SP.GetY()
+    # for the case where shooting point and middle point of assessed cell are same, automatically reachable
+    if not dX and not dY:
+        return True
     try:
         Azimuth = np.arctan(dX / dY)
     except ZeroDivisionError:
@@ -942,7 +817,7 @@ initial_height = 1.7 #initial height of projectile above DEM when shot [m]
 alpha_min = -90.0 #minimum of vertical angle range at which the projectile is shot [°]
 alpha_max = 90.0 #maximum of vertical angle range at which the projectile is shot [°]
 gravitational_acceleration = -9.81 #gravitational acceleration [m/s^2]
-initial_velocity = 10 #initial velocity of projectile when shot [m/s]
+initial_velocity = 30 #initial velocity of projectile when shot [m/s]
 air_density = 1.225 #air density [kg/m^3]
 drag_coefficient = 2.0 #aerodynamic drag coefficient of projectile
 cross_sectional_area = 0.000050 #cross-sectional area of the projectile [m^2]
@@ -970,242 +845,3 @@ main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throw
 
 end = timer()
 print('Duration:', end - start)
-
-# global IH, IV, DC, CSA, M, CONST, AA, WD, GA, AD, point_height, TSW, DMINH, DMAXH, AL
-# IH, IV, DC, CSA, M, CONST, AA, WD, GA, AD, point_height, TSW, DMINH, DMAXH = initial_height, initial_velocity, drag_coefficient, \
-#         cross_sectional_area, mass, constant, area_addition, wobble_distance, gravitational_acceleration, air_density, \
-#                                                                0.0, 1, 0.0, 200.0
-
-# throwshed()
-
-#plot_trajectory()
-#print(np.degrees(TS[iti-1][0]),np.degrees(TS[iti][0]),np.degrees(TS[iti+1][0]),np.degrees(TS[iti+2][0]),np.degrees(TS[-1][0]))
-
-# for x1, y1, x2, y2 in zip(TS[iti][1][0],TS[iti][1][1],TS[iti+1][1][0],TS[iti+1][1][1]):
-#     print(x1,y1,x2,y2)
-#     if x2 > x1:
-#         print('yes')
-
-
-# import matplotlib.pyplot as plt  # na vykreslenie grafov
-# plt.figure(figsize=(32, 18))
-# x1 = np.multiply(TS[iti][1][0],1000000000)
-# y1 = np.multiply(TS[iti][1][1],1000000000)
-# x2 = np.multiply(TS[iti+1][1][0],1000000000)
-# y2 = np.multiply(TS[iti+1][1][1],1000000000)
-# # plotting the points
-# plt.plot(x1, y1, '.-', markersize=4, linewidth=1, label='iti')
-# plt.plot(x2, y2, '.-', markersize=4, linewidth=1, label='iti+1')
-#
-# # ohranicenie, popis osi a nastavenie rovnakej mierky v smere oboch osi
-# xlim1 = (round(326.3099787361053,9)-0.000000005)*1000000000
-# xlim2 = (round(326.3099787361053,9)+0.000000005)*1000000000
-# ylim1 = (round(105.41666740186065,9)-0.000000005)*1000000000
-# ylim2 = (round(105.41666740186065,9)+0.000000005)*1000000000
-# plt.xlim(xlim1, xlim2)
-# plt.ylim(ylim1, ylim2)
-# plt.xlabel("vzdialenosť [m]")
-# plt.ylabel("výška [m]")
-# plt.gca().set_aspect('equal', adjustable='box')
-#
-# # function to show the plot
-# plt.legend()
-# plt.savefig('filename.png', dpi=900)
-# plt.show()
-#
-# print(find_intersection(326.03612131613994,105.83548252333263,326.30997873207264,105.41666740802577,
-#                         326.30997873610530,105.41666740186065,326.03612132016600,105.83548251716319))
-#
-# print(np.degrees(np.arctan((10541666740802577-10583548252333263)/(32630997873207264-32603612131613994))))
-# print(np.degrees(np.arctan((10541666740186065-10583548251716319)/(32630997873610530-32603612132016600))))
-
-#plot_trajectory()
-
-
-
-
-
-"""
-    # definicia vektorov, do ktorych sa budu ukladat suradnice najvzdialenejsich bodov jednotlivych azimutov
-    X_coor_point_polygon = []
-    Y_coor_point_polygon = []
-
-    #Vytvorenie listu so vsetkymi hodnotami azimutov, ktore sa pouziju v cykle
-    azimuth_list = np.arange(min_azimuth, max_azimuth + dazimuth, dazimuth)
-
-    # Otacame pod azimutom (cyklus) a porovnavame hodnoty z y_r s DMR
-    for Azimuth in azimuth_list:
-        S = []  #vektor vzdialenosti k najvzdialenejsim bodom pri jednotlivych uhloch vystrelu
-        # cyklus kde sa prestriedaju vsetky trajektorie (vsetky uhly vystrelu)
-        for i in range(0,len(alfa_list)):
-            j = 0
-            r = 0
-            #cyklus, kde sa meni vzdialenost
-            while True:
-                r += dr
-                #vypocet suradnic so vzdialenostou dr-nasobku a pod Azimutom
-                X_coor_compare_point = X_coor_point + r*np.sin(Azimuth)
-                Y_coor_compare_point = Y_coor_point + r*np.cos(Azimuth)
-
-                # Interpolacia DMR v porovnavanom bode
-                if int_compare == 0:
-                    #interpolacia DMR v bode porovnania (nearest neighbour)
-                    dem_int_cell_column = round(np.abs((X_coor_compare_point - (dem_gt[0]+dem_gt[1]/2))/dem_gt[1]))
-                    dem_int_cell_row = round(np.abs((Y_coor_compare_point - (dem_gt[3]+dem_gt[5]/2))/dem_gt[5]))
-                    dem_int_point_height = dem_array[dem_int_cell_row][dem_int_cell_column]
-                elif int_compare == 1:
-                    #interpolacia DMR v bode porovnania (linear)
-                    dem_int_cell_column = np.floor(np.abs((X_coor_compare_point - (dem_gt[0]+dem_gt[1]/2))/dem_gt[1])).astype(np.int32) #najblizsii nizsi stlpec v array od bodu, X coor of the left column in set of four cells
-                    dem_int_cell_row = np.floor(np.abs((Y_coor_compare_point - (dem_gt[3]+dem_gt[5]/2))/dem_gt[5])).astype(np.int32)    #najblizsii nizsi riadok v array od bodu, Y coor of the upper row in set of four cells
-                    X_coor_cell_1 = dem_gt[0] + dem_gt[1]/2 + dem_int_cell_column*dem_gt[1] #X suradnica stredov lavych buniek
-                    # X_coor_cell_2 = dem_gt[0] + dem_gt[1]/2 + (dem_int_cell_column+1)*dem_gt[1] #X suradnica stredov pravych buniek
-                    Y_coor_cell_1 = dem_gt[3] + dem_gt[5]/2 + (dem_int_cell_row+1)*dem_gt[5] #Y suradnica stredov dolnych buniek
-                    # Y_coor_cell_2 = dem_gt[3] + dem_gt[5]/2 + dem_int_cell_row*dem_gt[5] #Y suradnica stredov hornych buniek
-                    H_1 = dem_array[dem_int_cell_row][dem_int_cell_column]  #H lavej hornej bunky
-                    H_2 = dem_array[dem_int_cell_row][dem_int_cell_column+1]  #H pravej hornej bunky
-                    H_3 = dem_array[dem_int_cell_row+1][dem_int_cell_column]  #H lavej dolnej bunky
-                    H_4 = dem_array[dem_int_cell_row+1][dem_int_cell_column+1]  #H pravej dolnej bunky
-                    H_int_1 = ((X_coor_compare_point-X_coor_cell_1)*(H_4-H_3))/(np.abs(dem_gt[1])) + H_3   #Interpolovana vyska na dolnej linii
-                    H_int_2 = ((X_coor_compare_point-X_coor_cell_1)*(H_2-H_1))/(np.abs(dem_gt[1])) + H_1   #Interpolovana vyska na hornej linii
-                    dem_int_point_height = ((Y_coor_compare_point-Y_coor_cell_1)*(H_int_2-H_int_1))/(np.abs(dem_gt[5])) + H_int_1   #Interpolovana vyska medzi dolnou a hornou liniou
-                else:
-                    print("Hodnota int_compare neznama.")
-                    exit()
-
-                #porovnanie vysky bunky s vyskou sipu, ak je sip pod DMR, pripise sa maximalna vzdialenost pre konkretny uhol vystrelu
-                if dem_int_point_height >= y_r[i][j]:
-                    S.append(r)
-                    break
-                j += 1
-
-            #nakoniec sa vyhlada maximalna vzdialenost spomedzi vsetkych pocitanych pre kazdy uhol vystrelu a zapisu sa suradnice najvzdialenejseho bodu pre dany azimut
-            if i == range(0,len(alfa_list))[-1]:
-                max_r = max(S)
-                X_coor_point_polygon.append(X_coor_point + max_r*np.sin(Azimuth))
-                Y_coor_point_polygon.append(Y_coor_point + max_r*np.cos(Azimuth))
-
-    #######################################################################
-    ## VYTVORENIE VYSTUPNEJ VRSTVY
-    
-    # vytvorenie novej geometrie
-    throwshed_ring = ogr.Geometry(ogr.wkbLinearRing)
-    # ak je azimut v celom rozsahu (throwshed pre cele okolie), pridaju sa len body dopadu
-    if max_azimuth - min_azimuth == np.pi*2:
-        for X, Y in zip(X_coor_point_polygon,Y_coor_point_polygon):
-            throwshed_ring.AddPoint(X, Y)
-    # ak je azimut iba v konkretnom rozsahu a nepocita sa throwshed pre cele okolie, treba pridat aj bod vystrelu, aby sa to spravne vykreslilo        
-    else:
-        throwshed_ring.AddPoint(X_coor_point, Y_coor_point)   #prvy bod (vystrelu) totozny s poslednym
-        # pridanie zvysnych bodov do geometrie
-        for X, Y in zip(X_coor_point_polygon,Y_coor_point_polygon):
-            throwshed_ring.AddPoint(X, Y)
-        throwshed_ring.AddPoint(X_coor_point, Y_coor_point)   #posledny bod (vystrelu) totozny s prvym
-
-    # vytvorenie polygonu
-    throwshed_polygon = ogr.Geometry(ogr.wkbPolygon)
-    throwshed_polygon.AddGeometry(throwshed_ring)
-
-    # ulozenie polygonu do vrstvy
-    driver = ogr.GetDriverByName("ESRI Shapefile")
-    throwshed_outds = driver.CreateDataSource(throwshed_output_folder + "\\" + throwshed_file + "_temp.shp")
-    
-    # definicia referencneho systemu
-    srs = osr.SpatialReference()
-    if keep_point_crs == 0:
-        srs.ImportFromEPSG(EPSG)
-    else:
-        srs = point_layer.GetSpatialRef()
-    throwshed_outlayer = throwshed_outds.CreateLayer(throwshed_file + "_temp", srs)
-    
-    # pridanie polygonu do feature a jeho ulozenie do vystupnej vrstvy
-    throwshed_feature = ogr.Feature(throwshed_outlayer.GetLayerDefn())
-    throwshed_feature.SetGeometry(throwshed_polygon)
-    throwshed_outlayer.CreateFeature(throwshed_feature)
-
-    # Vypocet maximalnej vzdialenosti pre viewshed z geoudajov vstupneho rastra a bodu vystrelu
-    max_distance_4 =  (max([X_coor_point-dem_gt[0], dem_gt[0]+dem_gt[1]*len(dem_array[1])-X_coor_point])**2 + max([dem_gt[3]-Y_coor_point, Y_coor_point-(dem_gt[3]+dem_gt[5]*len(dem_array))])**2)**(1/2)
-    
-    # VYUZITIE VIEWSHED-U
-    if use_viewshed == 1:
-        # treba zavriet polygonovu vrstvu
-        throwshed_outds = throwshed_outlayer = throwshed_feature = None
-        # vytvorenie rastra viditelnosti, ulozi sa ako viewshed.tif do adresara s vystupnym throwshedom
-        gdal.ViewshedGenerate(srcBand=dem_band, driverName='GTiff', targetRasterName=throwshed_output_folder + "\\" + viewshed_file + ".tif", creationOptions=None, observerX=X_coor_point, observerY=Y_coor_point, observerHeight=h_E+feet_height, targetHeight=h_T, visibleVal=1, invisibleVal=0, outOfRangeVal=0, noDataVal=-9999, dfCurvCoeff=0.85714, mode=2, maxDistance=np.max(max_distance_4))
-        # otvorenie viewshed rastra
-        viewshed_ds = gdal.Open(throwshed_output_folder + "\\" + viewshed_file + ".tif")
-        # orezanie rastra viditelnosti throwshedom
-        gdal.Warp(throwshed_output_folder + "\\" + throwshed_file + ".tif", viewshed_ds, cutlineDSName = throwshed_output_folder + "\\" + throwshed_file + "_temp" + ".shp", cropToCutline = False, dstNodata = 0)
-        # vymazanie polygonu .shp s throwshedom a rastra .tif s viewshedom, tiez DMP sa vymaze
-        for format in [file.split('.')[1] for file in os.listdir(throwshed_output_folder) if file.split('.')[0] == throwshed_file + "_temp"]:
-            os.remove(throwshed_output_folder + '\\' + throwshed_file +"_temp." + format)
-        viewshed_ds = None
-        os.remove(throwshed_output_folder + "\\" + viewshed_file + ".tif")
-    # NEVYUZITIE VIEWSHED-U
-    elif use_viewshed == 0:
-        # najprv treba vytvorit raster a dat mu nastavenia
-        throwshed_ds = gdal.GetDriverByName('GTiff').Create(throwshed_output_folder + "\\" + throwshed_file + ".tif", xsize = dem_array.shape[1], ysize = dem_array.shape[0], bands = 1, eType = gdal.GDT_Byte)
-        throwshed_ds.SetGeoTransform(dem_gt)
-        throwshed_ds.SetProjection(srs.ExportToWkt())   #SS bude nastaveny ako bol aj pri polygonovej vrstve
-        throwshed_band = throwshed_ds.GetRasterBand(1)
-        throwshed_band.SetNoDataValue(0)
-        # throwshed polygon sa rasterizuje, [1] - priradenie hodnot do pasma 1, burn_values=[1] - priradenie hodnot buniek = 1
-        gdal.RasterizeLayer(throwshed_ds, [1], throwshed_outlayer, burn_values=[1])
-        # nakoniec novovytvorena vrstva, datasource aj prvok treba dat rovne None, lebo inak sa nezobrazi spravne v QGISe
-        throwshed_outds = throwshed_ds = throwshed_outlayer = throwshed_feature = None
-        # vektorova podoba sa vymaze a zostane len rastrova, tiez DMP sa vymaze
-        for format in [file.split('.')[1] for file in os.listdir(throwshed_output_folder) if file.split('.')[0] == throwshed_file + "_temp"]:
-            os.remove(throwshed_output_folder + '\\' + throwshed_file +"_temp." + format)
-
-    
-    # SCITAVANIE RASTROV THROWSHED-OV VIACERYCH BODOV
-    # prvy raster sa nacita do array ako zakladny
-    if point_number_once == 0 and point_count > 1:
-        # import prveho throwshedu
-        throwshed_ds = gdal.Open(throwshed_output_folder + "\\" + throwshed_file + ".tif")
-        # vyber pasma
-        throwshed_band = throwshed_ds.GetRasterBand(1)
-        # pridelenie hodnot rastra prveho throwshedu do hlavneho array
-        throwshed_main_array = throwshed_band.ReadAsArray()
-        point_number_once += 1  #zaruci ze sa zakladny raster do array ulozi iba raz
-        throwshed_ds = throwshed_band = None
-        # ak je bodov viac, a rastrov sa teda vytvori viac, je (zrejme) treba prvotny raster throwshedu vymazat
-        os.remove(throwshed_output_folder + "\\" + throwshed_file + ".tif")
-
-    # ak je bodov viac ako 1, vysledne rastre sa budu nacitavat a scitavat
-    if point_number > 0:
-        # import dalsieho throwshedu
-        throwshed_ds = gdal.Open(throwshed_output_folder + "\\" + throwshed_file + ".tif")
-        # vyber pasma
-        throwshed_band = throwshed_ds.GetRasterBand(1)
-        # pridelenie hodnot rastra dalsieho throwshedu do array
-        throwshed_array = throwshed_band.ReadAsArray()
-        throwshed_ds = throwshed_band = None
-        # priebezne mazanie rastrov throwshedu jednotlivych bodov
-        os.remove(throwshed_output_folder + "\\" + throwshed_file + ".tif")
-        # pripocitanie array dalsieho rastra do hlavneho array
-        throwshed_main_array = np.add(throwshed_main_array,throwshed_array)
-        # ak bude cyklus riesit throwshed posledneho bodu, hlavny array sa ulozi do vysledneho rastra throwshedu
-        if point_number == range(0,point_count)[-1]:
-            # vytvorenie a nastavenie rastra vysledneho throwshedu
-            throwshed_driver = gdal.GetDriverByName("GTiff")
-            throwshed_outds = throwshed_driver.Create(throwshed_output_folder + "\\" + throwshed_file + ".tif", xsize = throwshed_main_array.shape[1], ysize = throwshed_main_array.shape[0], bands = 1, eType = gdal.GDT_Float32)
-            throwshed_outds.SetGeoTransform(dem_gt)
-            throwshed_outds.SetProjection(srs.ExportToWkt())
-            throwshed_outband = throwshed_outds.GetRasterBand(1)
-            # pridelenie kumulativneho alebo jednoducheho throwshedu
-            if cumulative_throwshed == 0:
-                throwshed_main_array = np.where((throwshed_main_array >= 1),1,0)
-                throwshed_outband.WriteArray(throwshed_main_array)  #hodnoty rastra mozu byt 0 a 1
-            elif cumulative_throwshed == 1:
-                throwshed_outband.WriteArray(throwshed_main_array)  #hodnoty rastra mozu byt 0, 1, 2, 3...
-            else:
-                print("Volba kumulativneho throwshedu zle nastavena.")
-                exit()
-            throwshed_outband.SetNoDataValue(0)
-            throwshed_outds = throwshed_outband = None
-
-# zavretie a vymazanie DMP
-if use_line == 1:
-    dmp_outds = dem_band = None
-    os.remove(throwshed_output_folder + "\\" + buffer_file + "_dmp_temp.tif")
-"""
