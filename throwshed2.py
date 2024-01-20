@@ -1,6 +1,8 @@
 #######################################################################
 ## THROWSHED ##
 #######################################################################
+# Main #
+#######################################################################
 import os
 import numpy as np
 from osgeo import gdal, ogr, osr
@@ -832,7 +834,6 @@ def plot_trajectory(relative_cell, absolute_cell,jj,row,col,dir, poly_list, j, z
     plt.ylabel("výška [m]")
     plt.gca().set_aspect('equal', adjustable='box')
 
-    # function to show the plot
     #plt.legend()
 
 
