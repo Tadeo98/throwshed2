@@ -12,5 +12,6 @@ no_DMR_throwshed_angles.py
 no_DMR_throwshed_times.py
 arrowhead_parameters.py
 draw_graph.py
+get_profile.py
 environment.yml
 .idea

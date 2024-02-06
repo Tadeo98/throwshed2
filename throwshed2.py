@@ -3,55 +3,68 @@
 #######################################################################
 # Main #
 #######################################################################
+
+"""
+Main throwshed analysis script that creates geotiff containing throwshed result.
+"""
+
 import os
 import numpy as np
 from osgeo import gdal, ogr, osr
 from timeit import default_timer as timer
+import numerical_methods
 
 #######################################################################
 ## FUNCTIONS
 
-def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, throwshed_mode, use_viewshed, use_lines, EPSG,
-         cumulative_throwshed, initial_height, initial_velocity, drag_coefficient, cross_sectional_area, mass,
-         eyes_height, target_height, wall_height, constant, area_addition, wobble_distance, band_number=1,
-         interpolation=1, alpha_min=-90.0, alpha_max=90.0, gravitational_acceleration=-9.81, air_density=1.225, dalpha=5,
-         trajectory_segment_width=None):
+def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, throwshed_mode,
+         use_viewshed, use_lines, cumulative_throwshed, EPSG, atmosphere_type, numerical_method,
+         trajectory_segment_dimension, initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass,
+         eyes_height, target_height, wall_height, wall_width, band_number=1,
+         interpolation=1, alpha_min=-90.0, alpha_max=90.0, gravitational_acceleration=9.81, air_density=1.225,
+         trajectory_segment_size=None):
     """Just main function with controls, global variables settings and triggers to other functions"""
     # making sure the vertical angle has correct range
     if alpha_max < alpha_min:
         print("Minimal vertical shooting angle higher than maximal.")
         exit()
     # Global variables
-    global SRS, DP, PLP, TOF, TF, TM, UV, UL, CT, BN, INT, BF, TSW, AL, DDS, DB, DA, DGT, DMINH, DMAXH, IH, IV, \
-        DC, CSA, M, CONST, AA, WD, GA, AD, EH, TH, NDV, TA, VDS, VB, VA, VGT
+    global SRS, DP, PLP, TOF, TF, TM, UV, UL, CT, ATM, TSD, NM, BN, INT, BF, TSS, RR, AL, DDS, DB, DA, DGT, DMINH, \
+        DMAXH, IH, IV, D2M, T0, DIA, M, GA, AD, EH, TH, NDV, TA, VDS, VB, VA, VGT
     # CRS and other variable definition
     SRS = osr.SpatialReference()
     SRS.ImportFromEPSG(EPSG)
-    TOF, TF, TM, UV, UL, CT, BN, INT, IH, IV, DC, CSA, M, CONST, AA, WD, GA, AD, EH, TH = \
+    TOF, TF, TM, UV, UL, CT, ATM, TSD, BN, INT, IH, IV, D2M, T0, DIA, M, GA, AD, EH, TH = \
         throwshed_output_folder, throwshed_file, throwshed_mode, use_viewshed, use_lines, cumulative_throwshed, \
-        band_number, interpolation, initial_height, initial_velocity, drag_coefficient, cross_sectional_area, mass, \
-        constant, area_addition, wobble_distance, gravitational_acceleration, air_density, eyes_height, target_height
+        atmosphere_type, trajectory_segment_dimension, \
+        band_number, interpolation, initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass, \
+        gravitational_acceleration, air_density, eyes_height, target_height
+    # specific function that will compute ballistic trajectory is taken from numerical_methods module
+    NM = getattr(numerical_methods, numerical_method)
     # get DEM data and assign them as global (and referencing datasource)
     DDS, DB, DA, DGT, NDV = get_raster_from_file(dem_path)
-    # assign trajectory segment width
-    TSW = np.min(np.abs([DGT[1],DGT[5]])) if trajectory_segment_width == None else trajectory_segment_width
+    # assign trajectory segment size
+    TSS = np.min(np.abs([DGT[1],DGT[5]])) if trajectory_segment_size == None else trajectory_segment_size
+    # raster resolution (cell size)
+    RR = np.min(np.abs([DGT[1],DGT[5]]))
+    # trajectory segment size cannot be larger than the size of a raster cell, and if so, will be set to raster cell size
+    if TSS > RR:
+        TSS = RR
     # obtain list of point geometries (and all referencing data it's dependent on)
     point_layer_ds, point_layer, point_feature_list, point_geom_list = get_geom_list_from_file(point_layer_path)
     # burn lines as obstacles into DEM, creating new DEM (Digital terrain model -> Digital surface model)
     if UL:
-        burn_obstacles(line_layer_path, wall_height)
+        burn_obstacles(line_layer_path, wall_height, wall_width)
     # get minimum and maximum DEM height
     DMINH, DMAXH = get_min_max_height()
     # obtain list of vertical angles
-    AL = np.arange(np.radians(alpha_min), np.radians(alpha_max + dalpha), np.radians(dalpha))
-    AL[-1] = np.radians(alpha_max) # in case of last angle being larger than 90°
+    AL = np.linspace(np.radians(alpha_min), np.radians(alpha_max), 37)
     # throwshed array containing zeroes at first, will be edited later, dimensions same as dimensions of DEM raster
     TA = [np.zeros((DA.shape[0], DA.shape[1]), np.int16), np.zeros((DA.shape[0], DA.shape[1]), np.int16)]
     # cycle calculating throwshed for each point
     for i, point_geom in enumerate(point_geom_list):
         # compute throwshed for 1 point
         throwshed(point_geom, i)
-        #break #throwshed only for the first point is computed
         # temporary viewshed files have to be removed
         if UV:
             VDS = VB = VA = VGT = None
@@ -95,13 +108,14 @@ def get_geom_list_from_file(file_path):
     geom_list = [feature.GetGeometryRef() for feature in feature_list]
     return layer_ds, layer, feature_list, geom_list
 
-def burn_obstacles(line_layer_path, wall_height):
+def burn_obstacles(line_layer_path, wall_height, wall_width):
     """Lines that resemble walls/obstacles are burnt into DEM"""
     # get list of line geometries
     line_ds, line_layer, line_feature_list, line_geom_list = get_geom_list_from_file(line_layer_path)
-    # calculate minimal buffer distance, at which the obstacle will always be respected
-    buffer_dist = TSW / 2 + (DGT[1] ** 2 + DGT[5] ** 2) ** (1 / 2) / 2 - (TSW / 2) / (
-                DGT[1] ** 2 + DGT[5] ** 2) ** (1 / 2) % 1
+    # calculate minimal buffer distance, at which the obstacle will always be respected (half of diagonal)
+    min_buffer_dist = (DGT[1] ** 2 + DGT[5] ** 2) ** (1 / 2) / 2
+    # if inserted wall width/2 is less than minimal buffer distance, buffer distance has to be set to this value
+    buffer_dist = min_buffer_dist if wall_width/2 < min_buffer_dist else wall_width/2
     # 1st buffer is created and in case of multiple lines the cycle is utilized to create and unite buffers
     buffer_geom = line_geom_list[0].Buffer(buffer_dist, 1)
     if len(line_geom_list) > 1:
@@ -168,7 +182,7 @@ def throwshed(point_geom, k):
     # generate set of trajectories for vertical angle range with basic step
     trajectory_simple_set()
     # insert trajectories between those from simple set, to ensure throwshed's edge accuracy
-    trajectory_initial_set()
+    trajectory_set()
     # define Ascending and Descending Trajectory Fields
     create_trajectory_fields()
     # if viewshed is ON, it has to be created and deleted later
@@ -202,87 +216,31 @@ def trajectory_simple_set():
     """Generate set of trajectories for vertical angle range with basic step"""
     # trajectory dictionary, that will contain all trajectories, their initial shooting angle etc.
     global TS
-    # element in list begins with alpha value and continues with list of x and y coords lists in one trajectory
-    TS = [[alpha, generate_trajectory(alpha)] for alpha in AL]
+    # element in list begins with alpha value and continues with list of x and y (and z) coords lists in one trajectory, one of the numerical methods is chosen
+    TS = [[alpha, NM(SP.GetZ(), AD, DIA, M, IV, alpha, T0, ATM, D2M, GA, TSS, TSD, DMINH)] for alpha in AL]
 
-def generate_trajectory(alpha):
-    """Generates trajectory from input parameters"""
-    # initial drag
-    d = -AD * IV ** 2 * DC * CONST * (CSA + AA) / (2 * M)
-    # initial projectile velocity
-    V = IV
-    # list of all trajectory points' coordinates
-    points = [[0.0], [SP.GetZ()]]
-    # velocity x and y elements
-    V_x = V * np.cos(alpha)
-    V_y = V * np.sin(alpha)
-    # drag x and y elements
-    d_x = d * np.cos(alpha)
-    d_y = d * np.sin(alpha)
-    # time step is set to value approximate to half of cell size
-    dt = TSW / V / 2
-    # x and y steps
-    dX = V_x * dt + d_x / 2 * dt ** 2
-    dY = V_y * dt + (d_y + GA) / 2 * dt ** 2
-    # cycle calculating every new trajectory point one by one
-    while True:
-        # coords
-        points[0].append(points[0][-1] + dX)
-        points[1].append(points[1][-1] + dY)
-        # when last height is less than minimal DEM height, cycle breaks and last values are reinterpolated into minimal DEM height (to prevent errors in extreme situations of further functions)
-        if points[1][-1] <= DMINH:
-            # if the shooting point is on the cell with minimal height of DEM, there will be only 2 points for trajectories starting with angle <= 0 and these points can't be the same, so this is the only exception where last points of trajectories are not recalculated (interpolated) to minimal DEM height
-            if len(points[1]) == 2:
-                pass
-            # but normally the last segment passing the minimal DEM height is clipped by this height and the last point is interpolated to this height
-            else:
-                points[1][-1] = DMINH
-                points[0][-1] = points[0][-2] + (points[1][-1] - points[1][-2])/np.tan(alpha)
-            break
-        # new vertical angle
-        alpha = np.arctan(dY / dX)
-        # new velocity
-        V = ((dX / dt) ** 2 + (dY / dt) ** 2) ** (1 / 2)
-        # new drag
-        if (points[0][-1] ** 2 + (points[1][-1] - SP.GetZ()) ** 2) ** (1 / 2) < WD:
-            d = -AD * V ** 2 * DC * CONST * (CSA + AA) / (2 * M)
-        else:
-            d = -AD * V ** 2 * DC * CSA / (2 * M)
-        # new drag x and y elements
-        d_x = d * np.cos(alpha)
-        d_y = d * np.sin(alpha)
-        # new velocity x and y elements
-        V_x += d_x * dt
-        V_y += (d_y + GA) * dt
-        # time step is recalculated to value approximate to half of cell size
-        dt = TSW / V / 2
-        # new x and y steps
-        dX = V_x * dt + d_x / 2 * dt ** 2
-        dY = V_y * dt + (d_y + GA) / 2 * dt ** 2
-    return points
-
-def trajectory_initial_set():
+def trajectory_set():
     """Calculates and inserts trajectories between those in simple set, to make it denser and to ensure throwshed's
     edge accuracy. Calculates and returns trajectory envelope points list (its useful section)."""
     global TS, envelope
     # new and previous trajectory end x, first ones are random, just to make sure the cycle does not stop immediately
-    ntex = [(max(TS, key=lambda x: x[1][0][-1])[1][0][-1]+TSW)*2,(max(TS, key=lambda x: x[1][0][-1])[1][0][-1]+TSW)*3]
+    ntex = [(max(TS, key=lambda x: x[1][0][-1])[1][0][-1]+RR)*2,(max(TS, key=lambda x: x[1][0][-1])[1][0][-1]+RR)*3]
     # cycle that finds the furthest possible trajectory for minimal DEM height respecting the edge accuracy
-    while round(np.abs(ntex[0] - ntex[1])/TSW):
+    while round(np.abs(ntex[0] - ntex[1])/RR):
         #most distant trajectory index
         mdti = TS.index((max(TS, key=lambda x: x[1][0][-1])))
         # adds new trajectories before and after current furthest trajectory
         if mdti != 0 and mdti != len(TS)-1:
-            for new_alpha in [(TS[mdti+1][0] - TS[mdti][0]) / 2 + TS[mdti][0], (TS[mdti][0] - TS[mdti-1][0]) / 2 + TS[mdti-1][0]]:
-                TS.append([new_alpha, generate_trajectory(new_alpha)])
+            for new_alpha in [(TS[mdti+1][0] + TS[mdti][0]) / 2, (TS[mdti][0] + TS[mdti-1][0]) / 2]:
+                TS.append([new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, DMINH)])
         # for furthest trajectory that is also the first or last one, only one trajectory is added accordingly
         elif mdti == len(TS)-1:
-            new_alpha = (TS[mdti][0] - TS[mdti-1][0]) / 2 + TS[mdti-1][0]
-            TS.append([new_alpha, generate_trajectory(new_alpha)])
+            new_alpha = (TS[mdti][0] + TS[mdti-1][0]) / 2
+            TS.append([new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, DMINH)])
             mdti += 1 #this is just so that mdti gets higher like length of TS does (to cope with length of TS getting bigger, these 2 are compared in ntex)
         elif mdti == 0:
-            new_alpha = (TS[mdti+1][0] - TS[mdti][0]) / 2 + TS[mdti][0]
-            TS.append([new_alpha, generate_trajectory(new_alpha)])
+            new_alpha = (TS[mdti+1][0] + TS[mdti][0]) / 2
+            TS.append([new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, DMINH)])
         ntex = [max(TS[-1][1][0][-1],TS[-2][1][0][-1]) if mdti != 0 and mdti != len(TS)-1 else TS[-1][1][0][-1], ntex[0]]
         TS.sort(key=lambda x: x[0])
 
@@ -299,8 +257,8 @@ def trajectory_initial_set():
     # cycle that inserts trajectories between furthest trajectory at minimal DEM height and maximal DEM height
     while True:
         # generate new trajectory in between actual and following
-        new_alpha = abs(TS[iti][0] - TS[iti + 1][0]) / 2 + TS[iti][0]
-        TS.insert(iti+1, [new_alpha, generate_trajectory(new_alpha)])
+        new_alpha = (TS[iti][0] + TS[iti + 1][0]) / 2
+        TS.insert(iti+1, [new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, DMINH)])
         # in case of added trajectory having further reach than previously furthest trajectory (actual)
         if TS.index((max(TS, key=lambda x: x[1][0][-1]))) == iti + 1:
             iti += 1
@@ -319,8 +277,8 @@ def trajectory_initial_set():
         # if the last trajectory incorporated in cycle is the last one from the net with shooting angle value of 90 degrees.
         # This is because with 90 degrees trajectory left outer and inner intersections will be the same, which would lead to undesired behaviour
         if TS[iti+2][0] == np.radians(90):
-            # if X coordinate of last point in newly created trajectory is less than TSW, last possible area of the net was made dense enough (used to be X of highest point, but last was chosen so that when searching for cell intersecting trajectories no trajectories are added if the cell falls between 2 last trajectories with the last having 90° angle, which would cause problems in rare situations)
-            if not np.floor(TS[iti+1][1][0][-1]/TSW):
+            # if X coordinate of last point in newly created trajectory is less than cell size, last possible area of the net was made dense enough (used to be X of highest point, but last was chosen so that when searching for cell intersecting trajectories no trajectories are added if the cell falls between 2 last trajectories with the last having 90° angle, which would cause problems in rare situations)
+            if not np.floor(TS[iti+1][1][0][-1]/RR):
                 # Initial Trajectory Reversed list (X and Y coords)
                 ITR = [TS[iti][1][0][-1::-1], TS[iti][1][1][-1::-1]]
                 # update envelope with points from initial trajectory of last cycle, also update trajectory with shared part starting and ending point indexes (on trajectory as on envelope)
@@ -338,7 +296,7 @@ def trajectory_initial_set():
             else:
                 continue
 
-        # coordinates of midpoint on line between outer intersections (Outer Midpoint)
+        # coordinates of midpoint on the line between outer intersections (Outer Midpoint)
         XOM, YOM = (XROI + XLOI) / 2, (YROI + YLOI) / 2
         # following trajectory reversed list (X and Y coords)
         FTR = [TS[iti + 1][1][0][-1::-1], TS[iti + 1][1][1][-1::-1]]
@@ -350,7 +308,7 @@ def trajectory_initial_set():
                 DAII = ((XA-XII)**2 + (YA-YII)**2)**(1/2)
                 break
         # controls - compare horizontal distance of intersections and distance of arc from inner intersection
-        if round(np.abs(XROI - XLOI)/TSW) and round(DAII/TSW):
+        if round(np.abs(XROI - XLOI)/RR) and round(DAII/RR):
             continue
         else:
             # with each shooting point the amount of these inserted auxiliary trajectories would almost double which could create pointless amount of trajectories
@@ -510,13 +468,6 @@ def assign_values_to_throwshed(k):
     # cycle going through every single cell of DEM
     for i in range(DA.shape[0]):
         for j in range(DA.shape[1]):
-
-
-
-            start1 = timer()
-
-
-
             # with multiple shooting points nodata value can already be assigned to the cell, therefore the algorithm jumps to following cell
             if TA[0][i][j] == NDV:
                 continue
@@ -559,19 +510,10 @@ def assign_values_to_throwshed(k):
                     else:
                         TA[1][i][j] += 1
 
-            end1 = timer()
-            print(f'Cell {i} {j} took {end1-start1} seconds.')
-            print()
-
 def find_intersecting_trajectory(dir, relative_cell, absolute_cell):
     """Finds trajectory that intersects the cell (or is close enough, within allowed distance). For ATF cycle
     increments from start to end of trajectory set and viceversa for DTF. Returns True if the cell is accessible
     or False if the cell is not accessible without any obstacles - this is determined further function."""
-
-
-    start4 = timer()
-
-
     # Most Distant Trajectory Index
     MDTI = TS.index((max(TS, key=lambda x: x[1][0][-1])))
     if dir == -1:
@@ -603,14 +545,6 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell):
             i = ZIL[j]
             break
         ZIL = [ZIL[j], int(ZIL[j] + (ZIL[j + 1] - ZIL[j]) / 2), ZIL[j + 1]]
-
-
-    end4 = timer()
-    print(f'Zooming took {end4 - start4} seconds.')
-
-
-    start5 = timer()
-
     # auxiliary indexes
     i1, i2 = -1, -1
     # Intersecting Trajectory Found list informing whether the previous and following intersecting trajectories were already found and compared with the terrain
@@ -630,47 +564,29 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell):
             if i1 - i and ITF[0]:
                 # compute normal from previous/following trajectory segment to cell
                 normal1 = compute_normal(i, relative_cell.GetX(), relative_cell.GetY())
-                # if cell is not close enough to trajectory to consider it as piercing trajectory, following trajectory is tested. If it is close enough, i will be used as the index of intersecting trajectory in the terrain comparison
-                if not np.round(normal1 / TSW):
+                # if cell is not close enough to trajectory to consider it as piercing trajectory, following trajectory is tested. If it is close enough, it will be used as the index of intersecting trajectory in the terrain comparison
+                if not np.round(normal1 / RR):
                     if trajectory_terrain_comparison(i, relative_cell, absolute_cell):
                         del TS[ITSI:ITSI + ITIS]
-
-
-                        end5 = timer()
-                        print(f'Intersecting took {end5 - start5} seconds.')
-
-
                         return True
                     # 1 is changed to 0 so next time the condition is eluded
                     ITF[0] -= 1
             if i2 - i and ITF[1]:
                 normal2 = compute_normal(i+1, relative_cell.GetX(), relative_cell.GetY())
-                if not np.round(normal2 / TSW):
+                if not np.round(normal2 / RR):
                     if trajectory_terrain_comparison(i+1, relative_cell, absolute_cell):
                         del TS[ITSI:ITSI + ITIS]
-
-
-                        end5 = timer()
-                        print(f'Intersecting took {end5 - start5} seconds.')
-
-
                         return True
                     ITF[1] -= 1
             # if trajectories from both sides are intersecting and none of them returned True meaning reachable cell, cell is considered unreachable
             if not any(ITF):
                 del TS[ITSI:ITSI+ITIS]
-
-
-                end5 = timer()
-                print(f'Intersecting took {end5 - start5} seconds.')
-
-
                 return False
             # ratio for angle addition to angle of previous trajectory, if one of the trajectories is already intersecting, second one is being searched by halving the angle difference of surrounding trajectories, because by normal ratio new trajectory can fall on wrong side of the cell, to the one that has already been assessed, which will slow down the computation
             ratio = 1 / 2 if not ITF[0] or not ITF[1] else normal1 / (normal1 + normal2)
             # new alpha calculated from the ratio and new trajectory is generated
             new_alpha = TS[i][0] + (TS[i + 1][0] - TS[i][0]) * ratio
-            TS.insert(i + 1, [new_alpha, generate_trajectory(new_alpha)])
+            TS.insert(i + 1, [new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, DMINH)])
             # index i needs to be set one less to start again at the same trajectory
             # auxiliary index i1/2 to find out if the normal1/2 was already computed, will be used in next iteration
             i -= 1
@@ -685,10 +601,6 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell):
 def compute_normal(i, X_relative_cell, Y_relative_cell):
     """Computes perpendicular distance from closest segment of given trajectory and returns its size as well as index
     of first point of closest segment."""
-
-    start2 = timer()
-
-
     # Trajectory Point - Cell Distance List
     TPCDL = [((TS[i][1][0][j] - X_relative_cell) ** 2 + (TS[i][1][1][j] - Y_relative_cell) ** 2) ** (1 / 2) for j in range(len(TS[i][1][0]))]
     # index of closest point to cell is found
@@ -700,15 +612,7 @@ def compute_normal(i, X_relative_cell, Y_relative_cell):
     elif j == len(TPCDL) - 1:
         j -= 1
     # if closest point to cell mid point is closer than allowed distance, this distance is returned as there is no need to compute perpendicular distance to whole segment which can be only smaller than the point-cell distance
-    if not np.round(min(TPCDL) / TSW):
-
-
-
-
-        end2 = timer()
-        print(f'Normal took {end2 - start2} seconds.')
-
-
+    if not np.round(min(TPCDL) / RR):
         return min(TPCDL)
     # calculate perpendicular distance (normal) from closest trajectory segment
     a = TPCDL[j]
@@ -716,21 +620,11 @@ def compute_normal(i, X_relative_cell, Y_relative_cell):
     c = ((TS[i][1][0][j] - TS[i][1][0][j + 1]) ** 2 + (TS[i][1][1][j] - TS[i][1][1][j + 1]) ** 2) ** (1 / 2)
     s = (a + b + c) / 2
     area = (s * (s - a) * (s - b) * (s - c)) ** (1 / 2)
-
-
-    end2 = timer()
-    print(f'Normal took {end2-start2} seconds.')
-
     return area / c * 2
 
 def trajectory_terrain_comparison(i, relative_cell, absolute_cell):
     """Computes coordinates of terrain corresponding to each trajectory point and returns True or False depending
     on the result of terrain and trajectory point heights comparison."""
-
-
-    start3 = timer()
-
-
     # calculate azimuth of trajectory (shooting point to cell point), there is a chance of Y difference to be 0, therefore the exception
     dX = absolute_cell.GetX() - SP.GetX()
     dY = absolute_cell.GetY() - SP.GetY()
@@ -754,25 +648,13 @@ def trajectory_terrain_comparison(i, relative_cell, absolute_cell):
     # cycle iterates from first point of trajectory to the first point of segment closest to the cell point
     for X, Y in zip(TS[i][1][0],TS[i][1][1]):
         # if compared point is already above/below destination cell's area or beyond, cell is considered reachable
-        if X >= relative_cell.GetX()-TSW/2:
-
-
-            end3 = timer()
-            print(f'Terrain comparison took {end3 - start3} seconds.')
-
-
+        if X >= relative_cell.GetX()-RR/2:
             return True
         X_compare_point = SP.GetX() + X * np.sin(Azimuth)
         Y_compare_point = SP.GetY() + X * np.cos(Azimuth)
         Z_compare_point = int_function(X_compare_point, Y_compare_point)
         # if trajectory point is on or below terrain, False is returned
         if Y <= Z_compare_point:
-
-
-            end3 = timer()
-            print(f'Terrain comparison took {end3 - start3} seconds.')
-
-
             return False
 
 def create_viewshed():
@@ -783,145 +665,50 @@ def create_viewshed():
     # open viewshed raster, Viewshed Array will be crucial
     VDS, VB, VA, VGT, ndv = get_raster_from_file(TOF + "\\viewshed.tif")
 
-def plot_trajectory(relative_cell, absolute_cell,jj,row,col,dir, poly_list, j, zoom):
-    import matplotlib.pyplot as plt  # na vykreslenie grafov
-    plt.figure(figsize=(32, 18))
-    for i in range(len(TS)):
-        # plotting the points
-        #plt.plot(TS[i][1][0], TS[i][1][1], markersize=5, linewidth=1, label=TS[i][0]/np.pi*180)
-        plt.plot(TS[i][1][0], TS[i][1][1], '.', markersize=1)
-
-    #plt.plot(envelope[0], envelope[1], '-', linewidth=1)
-    #plt.plot([0, max(TS, key=lambda x: x[1][0][-1])[1][0][-1]], [DMAXH, DMAXH], '-', linewidth=1)
-
-    # end_cell = ogr.Geometry(ogr.wkbPoint)
-    # end_cell.AddPoint(-488475.5,-1259010.5)
-    profile = get_profile(absolute_cell)
-    plt.plot(profile[0], profile[1], '-', linewidth=3)
-
-    # plt.plot(TS[jj][1][0], TS[jj][1][1], '-', linewidth=1)
-    # plt.plot(TS[jj+1][1][0], TS[jj+1][1][1], '-', linewidth=1)
-
-    plt.plot(poly_list[0], poly_list[1], '-', linewidth=2)
-
-    plt.plot(relative_cell.GetX(), relative_cell.GetY(), 'o', markersize=2)
-
-    # plt.plot(ATF[0], ATF[1], '-', linewidth=2)
-    # plt.plot(DTF[0], DTF[1], '-', linewidth=2)
-    print(i)
-    #plt.plot(temp_xyp[0], temp_xyp[1], 'r.', markersize=2)
-    # xpar = max(TS, key=lambda x: x[1][0][-1])[1][0][-1]
-    # ypar = max(TS[-1][1][1])
-    # a = -ypar/xpar**2
-    # b = 0
-    # c = ypar
-    # x = []
-    # y = []
-    # for i in range(0,int(xpar)+1):
-    #     x.append(i)
-    #     y.append(a*i**2+b*i+c)
-    # plt.plot(x, y, 'b*', markersize=1)
-
-    # ohranicenie, popis osi a nastavenie rovnakej mierky v smere oboch osi
-    plt.xlim(0, 155)
-    plt.ylim(DMINH, max(TS[-1][1][1]))
-
-    # plt.xlim(min(poly_list[0]), max(poly_list[0]))
-    # plt.ylim(min(poly_list[1]), max(poly_list[1]))
-
-
-    plt.xlabel("vzdialenosť [m]")
-    plt.ylabel("výška [m]")
-    plt.gca().set_aspect('equal', adjustable='box')
-
-    #plt.legend()
-
-
-    plt.savefig(f'filename{row}_{col}_{dir}_zoom{zoom}_j{j}.png', dpi=300)
-
-    start = timer()
-    plt.show()
-    end = timer()
-    print('cas vykreslenia:', end-start)
-
-def get_profile(end_cell):
-    dX = end_cell.GetX() - SP.GetX()
-    dY = end_cell.GetY() - SP.GetY()
-    try:
-        Azimuth = np.arctan(dX / dY)
-    except ZeroDivisionError:
-        # for the case of dY being 0, making the division impossible
-        if dX > 0:
-            Azimuth = np.radians(90)
-        else:
-            Azimuth = np.radians(270)
-            # azimuth needs to be recalculated accordingly to correct quadrant
-    if dY > 0:
-        if dX < 0:
-            Azimuth += np.radians(360)
-    elif dY < 0:
-        Azimuth += np.radians(180)
-    profile = [[0],[SP.GetZ()-IH]]
-    s = 0
-    cell_dist = ((SP.GetX() - end_cell.GetX()) ** 2 + (SP.GetY() - end_cell.GetY()) ** 2) ** (1 / 2)
-    while True:
-        s += 0.5
-        X_compare_point = SP.GetX() + s * np.sin(Azimuth)
-        Y_compare_point = SP.GetY() + s * np.cos(Azimuth)
-        Z_compare_point = int_function(X_compare_point, Y_compare_point)
-        profile[0].append(s)
-        profile[1].append(Z_compare_point)
-        if s > cell_dist:
-            break
-    return profile
-
 #######################################################################
 ## PATHS
 dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\dem\dmr_clip.tif" #path to DEM
-point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\point\points1.shp"   #path to point layer
+point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\point\point.shp"   #path to point layer
 line_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\line\lines1.shp" #path to line layer
 throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\throwshed"  #path to folder, where the file will be saved
-throwshed_file = r"throwshedtestnew"   #name of output throwshed file
+throwshed_file = r"throwshedtestnew5"   #name of output throwshed file
 
 ## SETTINGS
-throwshed_mode = 1 #what type of throwshed will be calculated, simple safety zone (cells within safety field) = 0, regular throwshed with trajectory assessment = 1
+throwshed_mode = 0 #what type of throwshed will be calculated, simple safety zone (cells within safety field) = 0, regular throwshed with trajectory assessment = 1
 use_viewshed = 0 #utilization of viewshed, that will clip throwshed, No = 0, Yes = 1
 use_lines = 0 #utilization of line layer, where lines serve as obstacles or walls and will be burnt into DEM, No = 0, Yes = 1
 band_number = 1 #selected band from DEM, default = 1
 interpolation = 0 #interpolation of DEM to calculate altitude of shooting point or compare points within the DEM-to-trajectory comparison function, Nearest neighbour = 0, Bilinear = 1
 cumulative_throwshed = 1 #Calculate cumulative throwshed? No = 0, Yes = 1 (Apropriate with more than 1 shooting places)
 EPSG = 8353 #EPSG code for CRS of output throwshed layer and other temporary results, must be same as DEM's EPSG
+atmosphere_type = 1 #standard atmospheres - Army Standard Metro (0) and ICAO (1)
+numerical_method = "heun2D" #numerical method that calculates the ballistic trajectory, string that can be euler2D (in vertical plane only), euler3D, heun2D, heun3D
+trajectory_segment_dimension = 1 #decides whether trajectory segment size stands for its width (horizontal) = 0, or length (slant) = 1 (if set to width, shooting angles close to -90 and 90 are dangerous to use as minimum and maximum of the range)
 
 ## VARIABLES
 initial_height = 1.7 #initial height of projectile above DEM when shot [m]
 alpha_min = -90.0 #minimum of vertical angle range at which the projectile is shot [°]
-alpha_max = 15.0 #maximum of vertical angle range at which the projectile is shot [°]
-gravitational_acceleration = -9.81 #gravitational acceleration [m/s^2]
+alpha_max = 90.0 #maximum of vertical angle range at which the projectile is shot [°]
+gravitational_acceleration = 9.81 #gravitational acceleration [m/s^2]
 initial_velocity = 50 #initial velocity of projectile when shot [m/s]
+temperature = 15 #air temperature at shooting site [°C]
 air_density = 1.225 #air density [kg/m^3]
-drag_coefficient = 0.47 #aerodynamic drag coefficient of projectile
-cross_sectional_area = 0.001963 #cross-sectional area of the projectile [m^2]
+drag_to_mach = 0.47 #aerodynamic drag coefficient of projectile (constant, list or drag table)
+diameter = 0.001963 #diameter of the projectile [m^2]
 mass = 0.100 #projectile mass [kg]
-dalpha = 5 #step in vertical angle range [°]
-trajectory_segment_width = None #distance step, at which trajectory's points will be saved and compared to DEM [m], None = adjusted to DEM resolution (cell's size), any float/int value = customized distance step
+trajectory_segment_size = None #distance step (length or width), at which trajectory's points will be saved and compared to DEM [m], None = adjusted to DEM resolution (cell's size), any float/int value = customized distance step (equal or less than raster resolution)
 eyes_height = 1.6 #shooter eye height above DEM for viewshed [m]
 target_height = 1.7 #target height for viewshed [m]
 wall_height = 4.0 #obstacle/wall height (if obstacle option is used) [m]
-constant = 1 #constant multipling the drag coefficient within wobble distance of an arrow
-area_addition = 0.0 #average addition to cross-sectional area of an arrow within wobble distance [m^2]
-wobble_distance = 40 #wobble distance - distance at which an arrow stops wobbling [m]
+wall_width = 0.2 #obstacle/wall width (if obstacle option is used) [m]
+# constant = 1 #constant multipling the drag coefficient within wobble distance of an arrow
+# area_addition = 0.0 #average addition to cross-sectional area of an arrow within wobble distance [m^2]
+# wobble_distance = 40 #wobble distance - distance at which an arrow stops wobbling [m]
 
 
-
-start = timer()
-
-
-main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, throwshed_mode, use_viewshed, use_lines, EPSG,
-         cumulative_throwshed, initial_height, initial_velocity, drag_coefficient, cross_sectional_area, mass,
-         eyes_height, target_height, wall_height, constant, area_addition, wobble_distance, band_number=band_number,
+main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, throwshed_mode, use_viewshed,
+         use_lines, cumulative_throwshed, EPSG, atmosphere_type, numerical_method, trajectory_segment_dimension,
+         initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass,
+         eyes_height, target_height, wall_height, wall_width, band_number=band_number,
          interpolation=interpolation, alpha_min=alpha_min, alpha_max=alpha_max,
-         gravitational_acceleration=gravitational_acceleration, air_density=air_density, dalpha=dalpha,
-         trajectory_segment_width=None)
-
-end = timer()
-print('Duration:', end - start)
+         gravitational_acceleration=gravitational_acceleration, air_density=air_density, trajectory_segment_size=None)
