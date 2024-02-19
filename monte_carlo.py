@@ -6,14 +6,15 @@
 
 """
 Monte Carlo simulation based on deviations/range of input physical parameter or DEM.
-One of the parameters is chosen to be an array of random normally distributed or within range uniformly distributed
-values around the mean. Uniformly distributed values within the range is possible only for physical parameters, DEM
-errors will be distributed normally only.
-Parameter drag_to_mach can be also set as one of the physical parameters but only if it is meant to be a constant,
-because it can bear list values anyway.
+Parameters are arrays of random normally distributed or within range uniformly distributed values around the mean.
+Uniformly distributed values within the range is possible only for physical parameters, DEM errors will be distributed
+normally only.
+Parameter drag_to_mach can also hold non-zero deviation but only if it is meant to be a constant, because it can bear
+list values anyway (specific drag values for specific Mach, often used for supersonic projectiles).
 DEM raster can be recalculated by adding rasters with deviations/errors to it to serve as another mean of the simulation.
 Computation of individual throwsheds is conducted many times and these are all added into one probable throwshed file.
 Option with multiple shooters is possible but only with the cumulative mode being off.
+If the parameter is considered deterministic - same for all computations, set the deviation to 0.0.
 """
 
 import throwshed2
@@ -26,11 +27,18 @@ from osgeo import gdal, osr
 #FUNCTIONS
 
 def main():
+    global SRS, dds, db, da, dgt, dndv
     throwshed_file = r"throwshed_temp"  # name of output throwshed file
     cumulative_throwshed = 0  # Calculate cumulative throwshed? No = 0, Yes = 1 (Apropriate with more than 1 shooting places) --- For Monte Carlo simulation this has to be set to 0
-    global SRS, dds, db, da, dgt, dndv
+    # name of the temporary error DEM file
+    error_DEM = "error_DEM"
+    # path to DEM is changed to the one with errors
+    DEM_path = throwshed_output_folder + "\\" + error_DEM + ".tif"
+    # a short message that for DEM only normal distribution is possible, calculation is conducted anyway
+    if MCS_dist == 0:
+        print("Distribution is set to uniform, but for DEM, normal distribution will be used.")
     # program exits when the drag is set as a list and is chosen to be generated randomly at the same time
-    if MCS_parameter == "drag_to_mach" and (type(drag_to_mach) == str or type(drag_to_mach) == list):
+    if drag_to_mach[1] and (type(drag_to_mach[0]) == str or type(drag_to_mach[0]) == list):
         print("Drag cannot be chosen as a randomly generated array because it is already set as a list of drag to mach function. This works only with constant drag.")
         exit()
     # CRS definition
@@ -40,88 +48,62 @@ def main():
     dds, db, da, dgt, dndv = get_raster_from_file(dem_path,[1])
     # create raster arrays with zeroes, Probable Throwshed Raster (Array)
     PTRA = [np.zeros((da[0].shape[0], da[0].shape[1]), np.int16), np.zeros((da[0].shape[0], da[0].shape[1]), np.int16)]
-    # part of the cycle body that will remain same for both modes
-    cycle_body_s1 = """
-    throwshed2.main(DEM_path,point_layer_path,line_layer_path,throwshed_output_folder,throwshed_file,
-    throwshed_mode,use_viewshed,use_lines,cumulative_throwshed,EPSG,atmosphere_type,numerical_method,
-    trajectory_segment_dimension,initial_height,initial_velocity,drag_to_mach,temperature,diameter,mass,eyes_height,
-    target_height,wall_height,wall_width,band_number=band_number,interpolation=interpolation,alpha_min=alpha_min,
-    alpha_max=alpha_max,gravitational_acceleration=gravitational_acceleration,air_density=air_density,
-    trajectory_segment_size=None)
-    # get throwshed parameters
-    tds, tb, ta, tgt, tndv = get_raster_from_file(os.path.join(throwshed_output_folder, throwshed_file + ".tif"),[1,2])
-    # create mask with False at positions where NoData values lie
-    mask1, mask2 = (ta[0] != dndv), (ta[1] != dndv)
-    # add new throwshed raster, NoData values unchanged
-    PTRA = [np.where(mask1, PTRA[0] + ta[0], dndv), np.where(mask2, PTRA[1] + ta[1], dndv)]
-    tds = tb = ta = tgt = tndv = None
-    # just a note
-    print(f"Throwshed number {i+1} was added.")
-    i += 1"""
-    # ending part of the cycle body that will remain same for both modes
-    cycle_body_s2 ="""
-# create mask with False at positions where NoData values lie
-mask1, mask2 = (PTRA[0] != dndv), (PTRA[1] != dndv)
-# divide values by number of repetitions and get probability values ranging from 0 to 1, NoData values unchanged
-PTRA = [np.where(mask1, PTRA[0]/MCS_number, dndv), np.where(mask2, PTRA[1]/MCS_number, dndv)]
-# create probable throwshed raster file
-create_raster_file(PTF, PTRA, gdal.GDT_Float32, dndv, [1,2])
-# close all DEM parameters
-dds = db = da = dgt = dndv = None
-"""
-    # if the mode of the Monte Carlo simulation is based on one of the physical parameters, this part of code is conducted
-    if MCS_parameter != "DEM":
-        # parts of the cycle body that will be used only in this mode
-        cycle_body01 = """if MCS_dist==0:\n    """
-        cycle_body02 = """=np.linspace("""
-        cycle_body03 = """-MCS_dev_range,"""
-        cycle_body04 = """+MCS_dev_range,MCS_number)\nelse:\n    """
-        cycle_body05 = """=np.random.normal("""
-        cycle_body06 = """, MCS_dev_range, MCS_number)
-# ---for the physical parameter mode, uniformly or normally random distributed array is assigned to the chosen parameter
-# put the parameters (all to which an array can be assigned) into dictionary
-parameters = {
-    "initial_height": initial_height,
-    "gravitational_acceleration": gravitational_acceleration,
-    "initial_velocity": initial_velocity,
-    "temperature": temperature,
-    "air_density": air_density,
-    "diameter": diameter,
-    "mass": mass,
-    "drag_to_mach": drag_to_mach
-}
-for value in parameters.get('"""
-        cycle_body07 = """'):\n    """
-        cycle_body08 = """=value"""
-        DEM_path = dem_path
-        i = 0
-        # for each random value from the array of chosen parameter, one throwshed is generated and added to probable throwshed
-        exec(cycle_body01 + MCS_parameter + cycle_body02 + MCS_parameter + cycle_body03 + MCS_parameter + cycle_body04 +
-             MCS_parameter + cycle_body05 + MCS_parameter + cycle_body06 + MCS_parameter + cycle_body07 +
-             MCS_parameter + cycle_body08 + cycle_body_s1 + cycle_body_s2)
-    # otherwise multiple DEM with errors will be created on which the throwshed analysis will be conducted and the results will be added into one final raster
+    # put the parameters (all to which an array can be assigned) into dictionary
+    parameters = {
+        "initial_height": initial_height,
+        "gravitational_acceleration": gravitational_acceleration,
+        "initial_velocity": initial_velocity,
+        "temperature": temperature,
+        "air_density": air_density,
+        "diameter": diameter,
+        "mass": mass,
+        "drag_to_mach": drag_to_mach
+    }
+    # fill the parameters with randomly generated normally distributed or uniformly distributed (with a constant step) values in arrays
+    if MCS_dist:
+        for key, value in parameters.items():
+            parameters[key] = np.random.normal(value[0],value[1],MCS_number)
     else:
-        # name of the temporary error DEM file
-        error_DEM = "error_DEM"
-        # path to DEM is changed to the one with errors
-        DEM_path = throwshed_output_folder + "\\" + error_DEM + ".tif"
-        # a short message that for DEM only normal distribution is possible, calculation is conducted anyway
-        if MCS_dist == 0:
-            print("Distribution is set to uniform, but for DEM, normal distribution will be used.")
-        # part of the cycle body that is used only in this mode
-        cycle_body01 = """for i in range(MCS_number):
-    # create Error Raster (Array) with set DEM error
-    ERA = np.random.normal(0, MCS_dev_range, (da[0].shape[0], da[0].shape[1]))
-    # create mask with False at positions where NoData values lie
-    mask = (da[0] != dndv)
-    # New DEM Array by adding ERA to original DEM array, NoData values unchanged
-    NDEMA = [np.where(mask, da[0] + ERA, dndv)]
-    # create temporary error DEM raster file
-    create_raster_file(error_DEM, NDEMA, gdal.GDT_Float32, dndv, [1])
-    """
-        exec(cycle_body01 + cycle_body_s1 + cycle_body_s2)
+        for key, value in parameters.items():
+            parameters[key] = np.linspace(value[0]-value[1],value[0]+value[1],MCS_number)
+    # cycle that creates DEM with errors, generates throwsheds with all the different randomly generated values of parameters
+    for i in range(MCS_number):
+        # create Error Raster (Array) with set DEM error
+        ERA = np.random.normal(0, DEM_dev, (da[0].shape[0], da[0].shape[1]))
+        # create mask with False at positions where NoData values lie
+        mask = (da[0] != dndv)
+        # New DEM Array by adding ERA to original DEM array, NoData values unchanged
+        NDEMA = [np.where(mask, da[0] + ERA, dndv)]
+        # create temporary error DEM raster file
+        create_raster_file(error_DEM, NDEMA, gdal.GDT_Float32, dndv, [1])
+        # generate one throwshed
+        throwshed2.main(DEM_path,point_layer_path,line_layer_path,throwshed_output_folder,throwshed_file,
+        throwshed_mode,use_viewshed,use_lines,cumulative_throwshed,EPSG,atmosphere_type,numerical_method,
+        trajectory_segment_dimension,parameters.get("initial_height")[i],parameters.get("initial_velocity")[i],
+        parameters.get("drag_to_mach")[i],parameters.get("temperature")[i],parameters.get("diameter")[i],
+        parameters.get("mass")[i],eyes_height,target_height,wall_height,wall_width,band_number=band_number,
+        interpolation=interpolation,alpha_min=alpha_min,alpha_max=alpha_max,
+        gravitational_acceleration=parameters.get("gravitational_acceleration")[i],
+        air_density=parameters.get("air_density")[i],trajectory_segment_size=None)
+        # get throwshed parameters
+        tds, tb, ta, tgt, tndv = get_raster_from_file(os.path.join(throwshed_output_folder, throwshed_file + ".tif"),[1,2])
+        # create mask with False at positions where NoData values lie
+        mask1, mask2 = (ta[0] != dndv), (ta[1] != dndv)
+        # add new throwshed raster, NoData values unchanged
+        PTRA = [np.where(mask1, PTRA[0] + ta[0], dndv), np.where(mask2, PTRA[1] + ta[1], dndv)]
+        tds = tb = ta = tgt = tndv = None
         # remove temporary error DEM file(s)
         throwshed2.remove_temp_files(error_DEM)
+        # just a note
+        print(f"Throwshed number {i+1} was added.")
+    # create mask with False at positions where NoData values lie
+    mask1, mask2 = (PTRA[0] != dndv), (PTRA[1] != dndv)
+    # divide values by number of repetitions and get probability values ranging from 0 to 1, NoData values unchanged
+    PTRA = [np.where(mask1, PTRA[0]/MCS_number, dndv), np.where(mask2, PTRA[1]/MCS_number, dndv)]
+    # create probable throwshed raster file
+    create_raster_file(PTF, PTRA, gdal.GDT_Float32, dndv, [1,2])
+    # close all DEM parameters
+    dds = db = da = dgt = dndv = None
     # remove temporary throwshed file
     os.remove(throwshed_output_folder + '\\' + throwshed_file + ".tif")
 
@@ -160,8 +142,8 @@ def create_raster_file(raster_name, dem_array, GDT, no_data, bands):
 dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\dem\dmr_clip.tif"  # path to DEM
 point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\point\point.shp"  # path to point layer
 line_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\line\lines1.shp"  # path to line layer
-throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\throwshed\probable_throwshed\by_dem"  # path to folder, where the file will be saved
-PTF = r"probable_throwshed_normal_n50_s016_single_simple"  # name of output Probable Throwshed File
+throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\throwshed\probable_throwshed\by_all"  # path to folder, where the file will be saved
+PTF = r"probable_throwshed_normal_n200_single_simple"  # name of output Probable Throwshed File
 
 ## SETTINGS
 throwshed_mode = 0  # what type of throwshed will be calculated, simple safety zone (cells within safety field) = 0, regular throwshed with trajectory assessment = 1
@@ -176,15 +158,15 @@ trajectory_segment_dimension = 1  # decides whether trajectory segment size stan
 MCS_dist = 1 # decides whether values generate as uniformly distributed within the range (MCS_dev_range) = 0, or as normally distributed due to parameter deviation (MCS_dev_range) = 1
 
 ## VARIABLES
-#following 8 can be set as an array of randomly generated values:
-initial_height = 1.7 #initial height of projectile above DEM when shot [m]
-gravitational_acceleration = 9.81 #gravitational acceleration [m/s^2]
-initial_velocity = 50 #initial velocity of projectile when shot [m/s]
-temperature = 15 #air temperature at shooting site [°C]
-air_density = 1.225 #air density [kg/m^3]
-drag_to_mach = 0.47 #aerodynamic drag coefficient of projectile (constant, list or drag table)
-diameter = 0.05 #diameter of the projectile [m^2]
-mass = 0.100 #projectile mass [kg]
+#following 8 can be set as an array of randomly generated values, format [mean, deviation/one way range]:
+initial_height = [1.7, 0.15] #initial height of projectile above DEM when shot [m]
+gravitational_acceleration = [9.810, 0.002] #gravitational acceleration [m/s^2]
+initial_velocity = [50.0, 5.0] #initial velocity of projectile when shot [m/s]
+temperature = [15.0, 5.0] #air temperature at shooting site [°C]
+air_density = [1.225, 0.020] #air density [kg/m^3]
+drag_to_mach = [0.47, 0.05] #aerodynamic drag coefficient of projectile (constant, list or drag table)
+diameter = [0.050, 0.005] #diameter of the projectile [m^2]
+mass = [0.100, 0.010] #projectile mass [kg]
 #other variables:
 alpha_min = -90.0 #minimum of vertical angle range at which the projectile is shot [°]
 alpha_max = 90.0 #maximum of vertical angle range at which the projectile is shot [°]
@@ -197,8 +179,7 @@ wall_width = 0.2  # obstacle/wall width (if obstacle option is used) [m]
 # area_addition = 0.0 #average addition to cross-sectional area of an arrow within wobble distance [m^2]
 # wobble_distance = 40 #wobble distance - distance at which an arrow stops wobbling [m]
 # Monte Carlo specifications:
-MCS_parameter = "DEM"   #parameter on which the Monte Carlo simulation is conducted, it can be either "DEM" (Monte Carlo simulation will be based on the DEM deviations) or any of the physical parameters (based on the deviations of one of the physical parameters)
-MCS_number = 50 # number of Monte Carlo simulations
-MCS_dev_range = 0.16 # DEM elevation or physical parameter deviation or one way range for the Monte Carlo simulation
+MCS_number = 200 # number of Monte Carlo simulations
+DEM_dev = 0.16 # DEM elevation deviation for the Monte Carlo simulation
 
 main()
