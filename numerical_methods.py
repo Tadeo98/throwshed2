@@ -73,19 +73,19 @@ def euler2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, DMINH):
                 points[1][-1] = DMINH
                 points[0][-1] = points[0][-2] + (points[1][-1] - points[1][-2]) * V_x / V_y
             break
-        # velocity of projectile relative to wind speed
-        V_r = (V_x**2 + V_y**2)**(1/2)
+        # velocity
+        V = (V_x**2 + V_y**2)**(1/2)
         # temperature at relative height Y (above/below shooting site)
         Y = points[1][-1] - points[1][0]
         T_y = (T_0 + 273.15) * np.exp(-(atm.K[atm_t][0] + atm.K[atm_t][1]*Y)*Y) - 273.15
         # sound speed in air
         a_0 = atm.a_0_f[atm_t] * (T_y + 273.15) ** (1 / 2)
         # Mach number
-        Mach = V_r/a_0
+        Mach = V/a_0
         # interpolate Drag Coefficient (or can be constant)
         C_D = interpolate_C_D(C_D_t, Mach)
         # element in [1/m] containing parameters with recalculated air density and the independent value is changed from time to range x
-        C_D_x = C_i*C_D*V_r*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
+        C_D_x = C_i*C_D*V*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
         # elements in [1/s] simply called frequency, will be multiplied by the range step size
         F_x = C_D_x*V_x
         F_y = C_D_x*V_y-G/V_x
@@ -178,24 +178,26 @@ def heun2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, DMINH):
     V_x, V_y = V * np.cos(VA), V * np.sin(VA)
     # set trajectory segment width to given trajectory segment size
     TSW = TSS
+    # set new trajectory segment width to given trajectory segment size
+    TSW_n = TSS
     # cycle going through all trajectory elements
     while True:
         # for the case of TSS being entered as length (not width), width has to be computed
         if TSD:
             TSW = TSS * np.cos(np.arctan(V_y / V_x))
-        # velocity of projectile relative to wind speed
-        V_r = (V_x**2 + V_y**2)**(1/2)
+        # velocity
+        V = (V_x**2 + V_y**2)**(1/2)
         # temperature at relative height Y (above/below shooting site)
         Y = points[1][-1] - points[1][0]
         T_y = (T_0 + 273.15) * np.exp(-(atm.K[atm_t][0] + atm.K[atm_t][1]*Y)*Y) - 273.15
         # sound speed in air
         a_0 = atm.a_0_f[atm_t] * (T_y + 273.15) ** (1 / 2)
         # Mach number
-        Mach = V_r/a_0
+        Mach = V/a_0
         # interpolate Drag Coefficient (or can be constant)
         C_D = interpolate_C_D(C_D_t, Mach)
         # element in [1/m] containing parameters with recalculated air density and the independent value is changed from time to range x
-        C_D_x = C_i*C_D*V_r*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
+        C_D_x = C_i*C_D*V*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
         # elements in [1/s] simply called frequency, will be multiplied by the range step size
         F_x = C_D_x*V_x
         F_y = C_D_x*V_y-G/V_x
@@ -213,12 +215,26 @@ def heun2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, DMINH):
         # elements in [1/s] simply called frequency, will be multiplied by the range step size
         F_x_n = C_D_x_n * V_x_n
         F_y_n = C_D_x_n * V_y_n - G / V_x_n
+        # for the case of TSS being entered as length (not width), width for new (second) element has to be computed
+        if TSD:
+            TSW_n = TSS * np.cos(np.arctan(V_y_n / V_x_n))
         # recalculated new velocity elements with applied corrector
-        V_x_c, V_y_c = V_x + (F_x+F_x_n)/2*TSW, V_y + (F_y+F_y_n)/2*TSW
-        # X,Y,Z steps added to points list
-        points[0].append(points[0][-1]+TSW)
-        points[1].append(points[1][-1] + (V_y + V_y_c) / (V_x + V_x_c) * TSW)
-        #T += 2*TSW/(V_x + V_x_c)
+        V_x_c, V_y_c = V_x + (F_x*TSW+F_x_n*TSW_n)/2, V_y + (F_y*TSW+F_y_n*TSW_n)/2
+        # in point of trajectory, where the projectile starts to fall down, no corrector is applied, it is as in euler method (averaging values from these two elements creates undesired results)
+        if V_y_c/V_y < 0:
+            # X,Y,Z steps added to points list
+            points[0].append(points[0][-1] + TSW)
+            points[1].append(points[1][-1] + V_y/V_x * TSW)
+            # T += TSW/V_x
+        # normally applied corrector
+        else:
+            # at last, TSW has to be recalculated according to the average of the velocities
+            if TSD:
+                TSW = TSS * np.cos(np.arctan((V_y + V_y_c) / (V_x + V_x_c)))
+            # X,Y,Z steps added to points list
+            points[0].append(points[0][-1]+TSW)
+            points[1].append(points[1][-1] + (V_y + V_y_c) / (V_x + V_x_c) * TSW)
+            #T += 2*TSW/(V_x + V_x_c)
         # when last height is less than minimal DEM height, cycle breaks and last values are reinterpolated into minimal DEM height (to prevent errors in extreme situations of further functions)
         if points[1][-1] <= DMINH:
             # if the shooting point is on the cell with minimal height of DEM, there will be only 2 points for trajectories starting with angle <= 0 and these points can't be the same, so this is the only exception where last points of trajectories are not recalculated (interpolated) to minimal DEM height
@@ -255,6 +271,8 @@ def heun3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS, 
     V_x, V_y, V_z = V * np.cos(VA), V * np.sin(VA), 0
     # set trajectory segment width to given trajectory segment size
     TSW = TSS
+    # set new trajectory segment width to given trajectory segment size
+    TSW_n = TSS
     # cycle going through all trajectory elements
     while True:
         # for the case of TSS being entered as length (not width), width has to be computed
@@ -292,13 +310,28 @@ def heun3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS, 
         F_x_n = C_D_x_n * (V_x_n - W_x)+2*Ome*(-V_y_n*np.cos(Phi)*np.sin(Azi)-V_z_n*np.sin(Phi))/V_x_n
         F_y_n = C_D_x_n * V_y_n - G / V_x_n+2*Ome*(V_x_n*np.cos(Phi)*np.sin(Azi)+V_z_n*np.cos(Phi)*np.cos(Azi))/V_x_n
         F_z_n = C_D_x_n * (V_z_n - W_z)+2*Ome*(V_x_n*np.sin(Phi)-V_y_n*np.cos(Phi)*np.cos(Azi))/V_x_n
+        # for the case of TSS being entered as length (not width), width for new (second) element has to be computed
+        if TSD:
+            TSW_n = TSS * np.cos(np.arctan(V_y_n / (V_x_n ** 2 + V_z_n ** 2) ** (1 / 2)))
         # recalculated new velocity elements with applied corrector
-        V_x_c, V_y_c, V_z_c = V_x + (F_x+F_x_n)/2*TSW, V_y + (F_y+F_y_n)/2*TSW, V_z + (F_z+F_z_n)/2*TSW
-        # X,Y,Z steps added to points list
-        points[0].append(points[0][-1]+TSW)
-        points[1].append(points[1][-1] + (V_y + V_y_c) / (V_x + V_x_c) * TSW)
-        points[2].append(points[2][-1] + (V_z + V_z_c) / (V_x + V_x_c) * TSW)
-        # T += 2*TSW/(V_x + V_x_c)
+        V_x_c, V_y_c, V_z_c = V_x + (F_x*TSW+F_x_n*TSW_n)/2, V_y + (F_y*TSW+F_y_n*TSW_n)/2, V_z + (F_z*TSW+F_z_n*TSW_n)/2
+        # in point of trajectory, where the projectile starts to fall down, no corrector is applied, it is as in euler method (averaging values from these two elements creates undesired results)
+        if V_y_c/V_y < 0:
+            # X,Y,Z steps added to points list
+            points[0].append(points[0][-1] + TSW)
+            points[1].append(points[1][-1] + V_y/V_x * TSW)
+            points[2].append(points[2][-1] + V_z/V_x * TSW)
+            # T += TSW/V_x
+        # normally applied corrector
+        else:
+            # at last, TSW has to be recalculated according to the average of the velocities
+            if TSD:
+                TSW = TSS * np.cos(np.arctan((V_y + V_y_c) / 2 / (((V_x + V_x_c) / 2) ** 2 + ((V_z + V_z_c) / 2) ** 2) ** (1 / 2)))
+            # X,Y,Z steps added to points list
+            points[0].append(points[0][-1] + TSW)
+            points[1].append(points[1][-1] + (V_y + V_y_c) / (V_x + V_x_c) * TSW)
+            points[2].append(points[2][-1] + (V_z + V_z_c) / (V_x + V_x_c) * TSW)
+            # T += 2*TSW/(V_x + V_x_c)
         # when last height is less than minimal DEM height, cycle breaks and last values are reinterpolated into minimal DEM height (to prevent errors in extreme situations of further functions)
         if points[1][-1] <= DMINH:
             # if the shooting point is on the cell with minimal height of DEM, there will be only 2 points for trajectories starting with angle <= 0 and these points can't be the same, so this is the only exception where last points of trajectories are not recalculated (interpolated) to minimal DEM height
