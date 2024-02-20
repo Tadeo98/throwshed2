@@ -1,11 +1,11 @@
 #######################################################################
 ## THROWSHED ##
 #######################################################################
-# Monte Carlo simulation #
+# Probable throwshed with Monte Carlo simulation #
 #######################################################################
 
 """
-Monte Carlo simulation based on deviations/range of input physical parameter or DEM.
+Probable throwshed with Monte Carlo simulation based on deviations/range of input physical parameter or DEM.
 Parameters are arrays of random normally distributed or within range uniformly distributed values around the mean.
 Uniformly distributed values within the range is possible only for physical parameters, DEM errors will be distributed
 normally only.
@@ -13,7 +13,7 @@ Parameter drag_to_mach can also hold non-zero deviation but only if it is meant 
 list values anyway (specific drag values for specific Mach, often used for supersonic projectiles).
 DEM raster can be recalculated by adding rasters with deviations/errors to it to serve as another mean of the simulation.
 Computation of individual throwsheds is conducted many times and these are all added into one probable throwshed file.
-Option with multiple shooters is possible but only with the cumulative mode being off.
+Option with multiple shooters is possible but only with the cumulative mode being off (setting unreachable).
 If the parameter is considered deterministic - same for all computations, set the deviation to 0.0.
 """
 
@@ -178,7 +178,7 @@ wall_width = 0.2  # obstacle/wall width (if obstacle option is used) [m]
 # constant = 1 #constant multipling the drag coefficient within wobble distance of an arrow
 # area_addition = 0.0 #average addition to cross-sectional area of an arrow within wobble distance [m^2]
 # wobble_distance = 40 #wobble distance - distance at which an arrow stops wobbling [m]
-# Monte Carlo specifications:
+# Other probable throwshed/Monte Carlo specifications:
 MCS_number = 200 # number of Monte Carlo simulations
 DEM_dev = 0.16 # DEM elevation deviation for the Monte Carlo simulation
 
