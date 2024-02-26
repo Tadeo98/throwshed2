@@ -19,8 +19,8 @@ import numerical_methods
 
 def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, throwshed_mode,
          use_viewshed, use_lines, cumulative_throwshed, EPSG, atmosphere_type, numerical_method,
-         trajectory_segment_dimension, initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass,
-         eyes_height, target_height, wall_height, wall_width, band_number=1,
+         trajectory_segment_dimension, irregular_projectile, initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass, cross_sectional_area,
+         eyes_height, target_height, wall_height, wall_width, peak_drag, peak_area, oscillation_distance, oscillation_frequency, band_number=1,
          interpolation=1, alpha_min=-90.0, alpha_max=90.0, gravitational_acceleration=9.81, air_density=1.225,
          trajectory_segment_size=None):
     """Just main function with controls, global variables settings and triggers to other functions"""
@@ -29,16 +29,16 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
         print("Minimal vertical shooting angle higher than maximal.")
         exit()
     # Global variables
-    global SRS, DP, PLP, TOF, TF, TM, UV, UL, CT, ATM, TSD, NM, BN, INT, BF, TSS, RR, AL, DDS, DB, DA, DGT, DMINH, \
-        DMAXH, IH, IV, D2M, T0, DIA, M, GA, AD, EH, TH, NDV, TA, VDS, VB, VA, VGT
+    global SRS, DP, PLP, TOF, TF, TM, UV, UL, CT, ATM, TSD, IP, NM, BN, INT, BF, TSS, RR, AL, DDS, DB, DA, DGT, DMINH, \
+        DMAXH, IH, IV, D2M, T0, DIA, M, CSA, GA, AD, EH, TH, PD, PA, OD, OF, NDV, TA, VDS, VB, VA, VGT
     # CRS and other variable definition
     SRS = osr.SpatialReference()
     SRS.ImportFromEPSG(EPSG)
-    TOF, TF, TM, UV, UL, CT, ATM, TSD, BN, INT, IH, IV, D2M, T0, DIA, M, GA, AD, EH, TH = \
+    TOF, TF, TM, UV, UL, CT, ATM, TSD, IP, BN, INT, IH, IV, D2M, T0, DIA, M, CSA, GA, AD, EH, TH, PD, PA, OD, OF = \
         throwshed_output_folder, throwshed_file, throwshed_mode, use_viewshed, use_lines, cumulative_throwshed, \
-        atmosphere_type, trajectory_segment_dimension, \
-        band_number, interpolation, initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass, \
-        gravitational_acceleration, air_density, eyes_height, target_height
+        atmosphere_type, trajectory_segment_dimension, irregular_projectile,\
+        band_number, interpolation, initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass, cross_sectional_area,\
+        gravitational_acceleration, air_density, eyes_height, target_height, peak_drag, peak_area, oscillation_distance, oscillation_frequency
     # specific function that will compute ballistic trajectory is taken from numerical_methods module
     NM = getattr(numerical_methods, numerical_method)
     # get DEM data and assign them as global (and referencing datasource)
@@ -217,7 +217,7 @@ def trajectory_simple_set():
     # trajectory dictionary, that will contain all trajectories, their initial shooting angle etc.
     global TS
     # element in list begins with alpha value and continues with list of x and y (and z) coords lists in one trajectory, one of the numerical methods is chosen
-    TS = [[alpha, NM(SP.GetZ(), AD, DIA, M, IV, alpha, T0, ATM, D2M, GA, TSS, TSD, DMINH)] for alpha in AL]
+    TS = [[alpha, NM(SP.GetZ(), AD, DIA, M, IV, alpha, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH)] for alpha in AL]
 
 def trajectory_set():
     """Calculates and inserts trajectories between those in simple set, to make it denser and to ensure throwshed's
@@ -232,15 +232,15 @@ def trajectory_set():
         # adds new trajectories before and after current furthest trajectory
         if mdti != 0 and mdti != len(TS)-1:
             for new_alpha in [(TS[mdti+1][0] + TS[mdti][0]) / 2, (TS[mdti][0] + TS[mdti-1][0]) / 2]:
-                TS.append([new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, DMINH)])
+                TS.append([new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH)])
         # for furthest trajectory that is also the first or last one, only one trajectory is added accordingly
         elif mdti == len(TS)-1:
             new_alpha = (TS[mdti][0] + TS[mdti-1][0]) / 2
-            TS.append([new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, DMINH)])
+            TS.append([new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH)])
             mdti += 1 #this is just so that mdti gets higher like length of TS does (to cope with length of TS getting bigger, these 2 are compared in ntex)
         elif mdti == 0:
             new_alpha = (TS[mdti+1][0] + TS[mdti][0]) / 2
-            TS.append([new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, DMINH)])
+            TS.append([new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH)])
         ntex = [max(TS[-1][1][0][-1],TS[-2][1][0][-1]) if mdti != 0 and mdti != len(TS)-1 else TS[-1][1][0][-1], ntex[0]]
         TS.sort(key=lambda x: x[0])
 
@@ -258,7 +258,7 @@ def trajectory_set():
     while True:
         # generate new trajectory in between actual and following
         new_alpha = (TS[iti][0] + TS[iti + 1][0]) / 2
-        TS.insert(iti+1, [new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, DMINH)])
+        TS.insert(iti+1, [new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH)])
         # in case of added trajectory having further reach than previously furthest trajectory (actual)
         if TS.index((max(TS, key=lambda x: x[1][0][-1]))) == iti + 1:
             iti += 1
@@ -585,7 +585,7 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell):
             ratio = 1 / 2 if not ITF[0] or not ITF[1] else normal1 / (normal1 + normal2)
             # new alpha calculated from the ratio and new trajectory is generated
             new_alpha = TS[i][0] + (TS[i + 1][0] - TS[i][0]) * ratio
-            TS.insert(i + 1, [new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, DMINH)])
+            TS.insert(i + 1, [new_alpha, NM(SP.GetZ(), AD, DIA, M, IV, new_alpha, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH)])
             # index i needs to be set one less to start again at the same trajectory
             # auxiliary index i1/2 to find out if the normal1/2 was already computed, will be used in next iteration
             i -= 1

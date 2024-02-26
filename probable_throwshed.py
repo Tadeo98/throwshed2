@@ -56,6 +56,7 @@ def main():
         "temperature": temperature,
         "air_density": air_density,
         "diameter": diameter,
+        "cross_sectional_area": cross_sectional_area,
         "mass": mass,
         "drag_to_mach": drag_to_mach
     }
@@ -79,9 +80,10 @@ def main():
         # generate one throwshed
         throwshed2.main(DEM_path,point_layer_path,line_layer_path,throwshed_output_folder,throwshed_file,
         throwshed_mode,use_viewshed,use_lines,cumulative_throwshed,EPSG,atmosphere_type,numerical_method,
-        trajectory_segment_dimension,parameters.get("initial_height")[i],parameters.get("initial_velocity")[i],
+        trajectory_segment_dimension,irregular_projectile,parameters.get("initial_height")[i],parameters.get("initial_velocity")[i],
         parameters.get("drag_to_mach")[i],parameters.get("temperature")[i],parameters.get("diameter")[i],
-        parameters.get("mass")[i],eyes_height,target_height,wall_height,wall_width,band_number=band_number,
+        parameters.get("mass")[i],parameters.get("cross_sectional_area")[i],eyes_height,target_height,wall_height,
+        wall_width,peak_drag,peak_area,oscillation_distance,oscillation_frequency,band_number=band_number,
         interpolation=interpolation,alpha_min=alpha_min,alpha_max=alpha_max,
         gravitational_acceleration=parameters.get("gravitational_acceleration")[i],
         air_density=parameters.get("air_density")[i],trajectory_segment_size=None)
@@ -142,8 +144,8 @@ def create_raster_file(raster_name, dem_array, GDT, no_data, bands):
 dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\dem\dmr_clip.tif"  # path to DEM
 point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\point\point.shp"  # path to point layer
 line_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\line\lines1.shp"  # path to line layer
-throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\throwshed\probable_throwshed\by_all"  # path to folder, where the file will be saved
-PTF = r"probable_throwshed_normal_n200_single_simple"  # name of output Probable Throwshed File
+throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\Throwshed2\data\throwshed\arrow_wobble\AVIb0"  # path to folder, where the file will be saved
+PTF = r"probable_velocity_normal_n20_s5_single_simple_f60_d20"  # name of output Probable Throwshed File
 
 ## SETTINGS
 throwshed_mode = 0  # what type of throwshed will be calculated, simple safety zone (cells within safety field) = 0, regular throwshed with trajectory assessment = 1
@@ -155,31 +157,34 @@ EPSG = 8353  # EPSG code for CRS of output throwshed layer and other temporary r
 atmosphere_type = 1  # standard atmospheres - Army Standard Metro (0) and ICAO (1)
 numerical_method = "euler2D"  # numerical method that calculates the ballistic trajectory, string that can be euler2D (in vertical plane only), euler3D, heun2D, heun3D
 trajectory_segment_dimension = 1  # decides whether trajectory segment size stands for its width (horizontal) = 0, or length (slant) = 1 (if set to width, shooting angles close to -90 and 90 are dangerous to use as minimum and maximum of the range)
+irregular_projectile = 1 #use diameter to calculate symmetric circle cross-sectional area of projectile = 0, use cross_sectional_area for irregular shape of the projectile = 1
 MCS_dist = 1 # decides whether values generate as uniformly distributed within the range (MCS_dev_range) = 0, or as normally distributed due to parameter deviation (MCS_dev_range) = 1
 
 ## VARIABLES
 #following 8 can be set as an array of randomly generated values, format [mean, deviation/one way range]:
-initial_height = [1.7, 0.15] #initial height of projectile above DEM when shot [m]
-gravitational_acceleration = [9.810, 0.002] #gravitational acceleration [m/s^2]
+initial_height = [1.7, 0.0] #initial height of projectile above DEM when shot [m]
+gravitational_acceleration = [9.810, 0.000] #gravitational acceleration [m/s^2]
 initial_velocity = [50.0, 5.0] #initial velocity of projectile when shot [m/s]
-temperature = [15.0, 5.0] #air temperature at shooting site [°C]
-air_density = [1.225, 0.020] #air density [kg/m^3]
-drag_to_mach = [0.47, 0.05] #aerodynamic drag coefficient of projectile (constant, list or drag table)
-diameter = [0.050, 0.005] #diameter of the projectile [m^2]
-mass = [0.100, 0.010] #projectile mass [kg]
+temperature = [15.0, 0.0] #air temperature at shooting site [°C]
+air_density = [1.225, 0.000] #air density [kg/m^3]
+drag_to_mach = [0.47, 0.00] #aerodynamic drag coefficient of projectile (constant, list or drag table)
+diameter = [0.050, 0.000] #diameter of the projectile [m^2]
+cross_sectional_area = [0.0000938, 0.0000000] #cross sectional area of the projectile, used instead of diameter when the projectile is irregular [m^2]
+mass = [0.100, 0.000] #projectile mass [kg]
 #other variables:
-alpha_min = -90.0 #minimum of vertical angle range at which the projectile is shot [°]
-alpha_max = 90.0 #maximum of vertical angle range at which the projectile is shot [°]
+alpha_min = 0.0 #minimum of vertical angle range at which the projectile is shot [°]
+alpha_max = 45.0 #maximum of vertical angle range at which the projectile is shot [°]
 trajectory_segment_size = None  # distance step (length or width), at which trajectory's points will be saved and compared to DEM [m], None = adjusted to DEM resolution (cell's size), any float/int value = customized distance step (equal or less than raster resolution)
 eyes_height = 1.6  # shooter eye height above DEM for viewshed [m]
 target_height = 1.7  # target height for viewshed [m]
 wall_height = 4.0  # obstacle/wall height (if obstacle option is used) [m]
 wall_width = 0.2  # obstacle/wall width (if obstacle option is used) [m]
-# constant = 1 #constant multipling the drag coefficient within wobble distance of an arrow
-# area_addition = 0.0 #average addition to cross-sectional area of an arrow within wobble distance [m^2]
-# wobble_distance = 40 #wobble distance - distance at which an arrow stops wobbling [m]
+oscillation_frequency = 60 #frequency of area and drag coefficient change for projectile oscillation/rotation, 0 means no oscillation/rotation effect [Hz] or [s^-1]
+oscillation_distance = 20 #distance (of curved ballistic trajectory) up to which the rotation/oscillation of projectile linearly decreases (no rotation/oscillation afterwards), if 0, the rotation/oscillation effect remains same for whole trajectory [m]
+peak_drag = 3.56 #drag coefficient at peak of projectile's rotation/oscillation right after shooting
+peak_area = 0.0005972 #cross-sectional area at peak of projectile's rotation/oscillation right after shooting [m^2]
 # Other probable throwshed/Monte Carlo specifications:
-MCS_number = 200 # number of Monte Carlo simulations
-DEM_dev = 0.16 # DEM elevation deviation for the Monte Carlo simulation
+MCS_number = 20 # number of Monte Carlo simulations
+DEM_dev = 0.00 # DEM elevation deviation for the Monte Carlo simulation
 
 main()

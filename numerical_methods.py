@@ -34,21 +34,25 @@ def interpolate_C_D(C_D_t, Mach):
         C_D = d2M
     return C_D
 
-def euler2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, DMINH):
+def euler2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH):
     """
     Euler differential method, generates trajectory 2D coordinates list.
     Metric units are used (m, °C, kg, °)
     Y_0 = initial altitude, AD - air density, d - diameter, M - mass, V - velocity, VA - vertical angle,
     T_0 - temperature at shooting site, atm_t - atmosphere type, C_D_t - drag coefficient type or table or constant,
     G - gravitational acceleration, TSS - trajectory segment size (width/length), TSD - trajectory segment dimension,
-    DMINH - minimal height within DTM
+    IP - irregular projectile, CSA - cross-sectional area, PD - peak drag, PA - peak area,
+    OD - oscillation distance, OF - oscillation frequency, DMINH - minimal height within DTM
     """
-    # Cross-sectional area of the projectile
-    CSA = np.pi*d**2/4
+    # Cross-sectional area of the projectile (calculated from diameter if desired)
+    if not IP:
+        CSA = np.pi*d**2/4
     # list containing X,Y coordinates of trajectory points
     points = [[0.0], [Y_0]]
     # overall time
     T = 0
+    # Curved Distance of Ballistic Trajectory
+    CDBT = 0
     # incomplete drag formula - without drag coefficient and velocity (fixed auxiliary parameter)
     C_i = -AD * CSA / (2 * M)
     V_x, V_y = V * np.cos(VA), V * np.sin(VA)
@@ -62,7 +66,13 @@ def euler2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, DMINH):
         # X,Y steps added to points list (and Time increased)
         points[0].append(points[0][-1]+TSW)
         points[1].append(points[1][-1] + V_y / V_x * TSW)
-        # T += TSW / V_x
+        # time and CDBT increases if there is a frequency
+        if OF:
+            T += TSW / V_x
+            if TSD:
+                CDBT += TSS
+            else:
+                CDBT += TSW/np.cos(np.arctan(V_y/V_x))
         # when last height is less than minimal DEM height, cycle breaks and last values are reinterpolated into minimal DEM height (to prevent errors in extreme situations of further functions)
         if points[1][-1] <= DMINH:
             # if the shooting point is on the cell with minimal height of DEM, there will be only 2 points for trajectories starting with angle <= 0 and these points can't be the same, so this is the only exception where last points of trajectories are not recalculated (interpolated) to minimal DEM height
@@ -84,8 +94,27 @@ def euler2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, DMINH):
         Mach = V/a_0
         # interpolate Drag Coefficient (or can be constant)
         C_D = interpolate_C_D(C_D_t, Mach)
-        # element in [1/m] containing parameters with recalculated air density and the independent value is changed from time to range x
-        C_D_x = C_i*C_D*V*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
+        # for oscillating/rotating objects (irregular projectiles, wobbling arrows) drag and area are adjusted according to frequency and max distance, after OD there is only regular drag and area if there's frequency at all
+        if not OF:
+            # no oscillation, element in [1/m] containing parameters with recalculated air density and the independent value is changed from time to range x
+            C_D_x = C_i*C_D*V*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
+        else:
+            if OD != 0 and CDBT >= OD:
+                # no adjustments
+                C_D_x = C_i * C_D * V * np.exp(-(atm.h[atm_t][0] + atm.h[atm_t][1] * Y) * Y) / V_x
+            else:
+                # oscillation coefficient computed goniometrically from the current state of the projectile (ranges from regular position 0 to peak 1)
+                OC = abs(np.sin((T*OF)%1*2*np.pi))
+                # OC recalculated linearly according to ratio of the distance travelled to oscillation distance
+                if OD:
+                    OC *= (OD-CDBT)/OD
+                # drag and area differences are adjusted accordingly
+                DDIFF, ADIFF = (PD-C_D)*OC, (PA-CSA)*OC
+                # C_D with added drag according to current state of the projectile
+                C_D_c = C_D + DDIFF
+                # C_i with added cross-sectional area according to current state of the projectile
+                C_i_c = -AD * (CSA+ADIFF) / (2 * M)
+                C_D_x = C_i_c*C_D_c*V*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
         # elements in [1/s] simply called frequency, will be multiplied by the range step size
         F_x = C_D_x*V_x
         F_y = C_D_x*V_y-G/V_x
@@ -93,7 +122,7 @@ def euler2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, DMINH):
         V_x, V_y = V_x + F_x*TSW, V_y + F_y*TSW
     return points
 
-def euler3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS, TSD, DMINH):
+def euler3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH):
     """
     Euler differential method, generates trajectory 3D coordinates list.
     Metric units are used (m, °C, kg, °)
@@ -101,16 +130,20 @@ def euler3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS,
     W_x and W_z - wind velocity elements, T_0 - temperature at shooting site, Phi - latitude of firing site,
     Azi - azimut of fire clockwise from north, atm_t - atmosphere type,
     C_D_t - drag coefficient type or table or constant, G - gravitational acceleration,
-    TSS - trajectory segment size (width/length), TSD - trajectory segment dimension, DMINH - minimal height within DTM
+    TSS - trajectory segment size (width/length), TSD - trajectory segment dimension, IP - irregular projectile,
+    CSA - cross-sectional area, PD - peak drag, PA - peak area,
+    OD - oscillation distance, OF - oscillation frequency, DMINH - minimal height within DTM
     """
-    # Cross-sectional area of the projectile
-    CSA = np.pi*d**2/4
-    # Angular velocity of Earth
+    # Cross-sectional area of the projectile (calculated from diameter if desired)
+    if not IP:
+        CSA = np.pi*d**2/4
     Ome = 0.00007292
     # list containing X,Y,Z coordinates of trajectory points
     points = [[0.0], [Y_0], [0.0]]
     # overall time
     T = 0
+    # Curved Distance of Ballistic Trajectory
+    CDBT = 0
     # incomplete drag formula - without drag coefficient and velocity (fixed auxiliary parameter)
     C_i = -AD * CSA / (2 * M)
     V_x, V_y, V_z = V * np.cos(VA), V * np.sin(VA), 0
@@ -121,11 +154,17 @@ def euler3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS,
         # for the case of TSS being entered as length (not width), width has to be computed
         if TSD:
             TSW = TSS*np.cos(np.arctan(V_y/(V_x**2+V_z**2)**(1/2)))
-        # X,Y,Z steps added to points list (and Time increased)
+        # X,Y,Z steps added to points list
         points[0].append(points[0][-1]+TSW)
         points[1].append(points[1][-1] + V_y / V_x * TSW)
         points[2].append(points[2][-1] + V_z / V_x * TSW)
-        # T += TSW / V_x
+        # time and CDBT increases if there is a frequency
+        if OF:
+            T += TSW / V_x
+            if TSD:
+                CDBT += TSS
+            else:
+                CDBT += TSW / np.cos(np.arctan(V_y/(V_x**2+V_z**2)**(1/2)))
         # when last height is less than minimal DEM height, cycle breaks and last values are reinterpolated into minimal DEM height (to prevent errors in extreme situations of further functions)
         if points[1][-1] <= DMINH:
             # if the shooting point is on the cell with minimal height of DEM, there will be only 2 points for trajectories starting with angle <= 0 and these points can't be the same, so this is the only exception where last points of trajectories are not recalculated (interpolated) to minimal DEM height
@@ -148,8 +187,27 @@ def euler3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS,
         Mach = V_r/a_0
         # interpolate Drag Coefficient (or can be constant)
         C_D = interpolate_C_D(C_D_t, Mach)
-        # element in [1/m] containing parameters with recalculated air density and the independent value is changed from time to range x
-        C_D_x = C_i*C_D*V_r*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
+        # for oscillating/rotating objects (irregular projectiles, wobbling arrows) drag and area are adjusted according to frequency and max distance, after OD there is only regular drag and area if there's frequency at all
+        if not OF:
+            # no oscillation, element in [1/m] containing parameters with recalculated air density and the independent value is changed from time to range x
+            C_D_x = C_i*C_D*V_r*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
+        else:
+            if OD != 0 and CDBT >= OD:
+                # no adjustments
+                C_D_x = C_i*C_D*V_r*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
+            else:
+                # oscillation coefficient computed goniometrically from the current state of the projectile (ranges from regular position 0 to peak 1)
+                OC = abs(np.sin((T * OF) % 1 * 2 * np.pi))
+                # OC recalculated linearly according to ratio of the distance travelled to oscillation distance
+                if OD:
+                    OC *= (OD - CDBT) / OD
+                # drag and area differences are adjusted accordingly
+                DDIFF, ADIFF = (PD - C_D) * OC, (PA - CSA) * OC
+                # C_D with added drag according to current state of the projectile
+                C_D_c = C_D + DDIFF
+                # C_i with added cross-sectional area according to current state of the projectile
+                C_i_c = -AD * (CSA + ADIFF) / (2 * M)
+                C_D_x = C_i_c*C_D_c*V_r*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
         # elements in [1/s] simply called frequency, will be multiplied by the range step size
         F_x = C_D_x*(V_x-W_x)+2*Ome*(-V_y*np.cos(Phi)*np.sin(Azi)-V_z*np.sin(Phi))/V_x
         F_y = C_D_x*V_y-G/V_x+2*Ome*(V_x*np.cos(Phi)*np.sin(Azi)+V_z*np.cos(Phi)*np.cos(Azi))/V_x
@@ -158,17 +216,22 @@ def euler3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS,
         V_x, V_y, V_z = V_x + F_x*TSW, V_y + F_y*TSW, V_z + F_z*TSW
     return points
 
-def heun2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, DMINH):
+def heun2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH):
     """
     Heun differential method, generates trajectory 2D coordinates list.
     Metric units are used (m, °C, kg, ...)
     Y_0 = initial altitude, AD - air density, d - diameter, M - mass, V - velocity, VA - vertical angle,
     T_0 - temperature at shooting site, atm_t - atmosphere type, C_D_t - drag coefficient type or table or constant,
     G - gravitational acceleration, TSS - trajectory segment size (width/length), TSD - trajectory segment dimension,
-    DMINH - minimal height within DTM
+    IP - irregular projectile, CSA - cross-sectional area, PD - peak drag, PA - peak area,
+    OD - oscillation distance, OF - oscillation frequency, DMINH - minimal height within DTM
     """
-    # Cross-sectional area of the projectile
-    CSA = np.pi*d**2/4
+    # just a note
+    if OF:
+        print("Heun method does not support oscillating projectiles.")
+    # Cross-sectional area of the projectile (calculated from diameter if desired)
+    if not IP:
+        CSA = np.pi*d**2/4
     # list containing X,Y coordinates of trajectory points
     points = [[0.0], [Y_0]]
     # overall time
@@ -204,14 +267,14 @@ def heun2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, DMINH):
         # PREDICTOR - CORRECTOR APPLICATION, NEW PARAMETERS
         # new velocity elements
         V_x_n, V_y_n = V_x + F_x*TSW, V_y + F_y*TSW
-        # new relative velocity
-        V_r_n = (V_x_n ** 2 + V_y_n ** 2) ** (1 / 2)
+        # new velocity
+        V_n = (V_x_n ** 2 + V_y_n ** 2) ** (1 / 2)
         # Mach number
-        Mach_n = V_r_n / a_0
+        Mach_n = V_n / a_0
         # interpolate Drag Coefficient (or can be constant)
         C_D_n = interpolate_C_D(C_D_t, Mach_n)
         # drag coefficient with recalculated air density and the independent value is changed from time to range x
-        C_D_x_n = C_i * C_D_n * V_r_n * np.exp(-(atm.h[atm_t][0] + atm.h[atm_t][1] * Y) * Y) / V_x_n
+        C_D_x_n = C_i * C_D_n * V_n * np.exp(-(atm.h[atm_t][0] + atm.h[atm_t][1] * Y) * Y) / V_x_n
         # elements in [1/s] simply called frequency, will be multiplied by the range step size
         F_x_n = C_D_x_n * V_x_n
         F_y_n = C_D_x_n * V_y_n - G / V_x_n
@@ -248,7 +311,7 @@ def heun2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, DMINH):
         V_x, V_y = V_x_c, V_y_c
     return points
 
-def heun3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS, TSD, DMINH):
+def heun3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH):
     """
     Heun differential method, generates trajectory 3D coordinates list.
     Metric units are used (m, °C, kg, ...)
@@ -256,10 +319,16 @@ def heun3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS, 
     W_x and W_z - wind velocity elements, T_0 - temperature at shooting site, Phi - latitude of firing site,
     Azi - azimut of fire clockwise from north, atm_t - atmosphere type,
     C_D_t - drag coefficient type or table or constant, G - gravitational acceleration,
-    TSS - trajectory segment size (width/length), TSD - trajectory segment dimension, DMINH - minimal height within DTM
+    TSS - trajectory segment size (width/length), TSD - trajectory segment dimension, IP - irregular projectile,
+    CSA - cross-sectional area, PD - peak drag, PA - peak area,
+    OD - oscillation distance, OF - oscillation frequency, DMINH - minimal height within DTM
     """
-    # Cross-sectional area of the projectile
-    CSA = np.pi*d**2/4
+    # just a note
+    if OF:
+        print("Heun method does not support oscillating projectiles.")
+    # Cross-sectional area of the projectile (calculated from diameter if desired)
+    if not IP:
+        CSA = np.pi*d**2/4
     # Angular velocity of Earth
     Ome = 0.00007292
     # list containing X,Y,Z coordinates of trajectory points
