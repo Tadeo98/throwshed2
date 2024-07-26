@@ -172,8 +172,8 @@ diameter = [0.050, 0.000] #diameter of the projectile [m^2]
 cross_sectional_area = [0.0000938, 0.0000000] #cross sectional area of the projectile, used instead of diameter when the projectile is irregular [m^2]
 mass = [0.100, 0.000] #projectile mass [kg]
 #other variables:
-alpha_min = 0.0 #minimum of vertical angle range at which the projectile is shot [°]
-alpha_max = 45.0 #maximum of vertical angle range at which the projectile is shot [°]
+alpha_min = -90.0 #minimum of vertical angle range at which the projectile is shot [°]
+alpha_max = 90.0 #maximum of vertical angle range at which the projectile is shot [°]
 trajectory_segment_size = None  # distance step (length or width), at which trajectory's points will be saved and compared to DEM [m], None = adjusted to DEM resolution (cell's size), any float/int value = customized distance step (equal or less than raster resolution)
 eyes_height = 1.6  # shooter eye height above DEM for viewshed [m]
 target_height = 1.7  # target height for viewshed [m]

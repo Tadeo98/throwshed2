@@ -268,11 +268,13 @@ def trajectory_set():
             continue
 
         # get intersection of actual and following (newly created) trajectory (Right Outer Intersection)
-        XROI, YROI = intersection_of_trajectories(iti, iti+1)
-        # get intersection of following and 2. following trajectory (Left Outer Intersection)
-        XLOI, YLOI = intersection_of_trajectories(iti+1, iti+2)
-        # get intersection of actual and 2. following trajectory (Inner Intersection), first one is calculated, the rest will be reused from outer intersections
-        XII, YII = intersection_of_trajectories(iti, iti+2)
+        XROI, YROI = calculate_intersection(TS[iti][1][0][1:], TS[iti][1][1][1:], TS[iti+1][1][0][1:], TS[iti+1][1][1][1:])
+        # following intersections can be obtained only if the 2. following trajectory is not generated with 90-degrees shooting angle
+        if TS[iti+2][0] != np.radians(90):
+            # get intersection of following and 2. following trajectory (Left Outer Intersection)
+            XLOI, YLOI = calculate_intersection(TS[iti+1][1][0][1:], TS[iti+1][1][1][1:], TS[iti+2][1][0][1:], TS[iti+2][1][1][1:])
+            # get intersection of actual and 2. following trajectory (Inner Intersection), first one is calculated, the rest will be reused from outer intersections
+            XII, YII = calculate_intersection(TS[iti][1][0][1:], TS[iti][1][1][1:], TS[iti+2][1][0][1:], TS[iti+2][1][1][1:])
 
         # if the last trajectory incorporated in cycle is the last one from the net with shooting angle value of 90 degrees.
         # This is because with 90 degrees trajectory left outer and inner intersections will be the same, which would lead to undesired behaviour
@@ -295,19 +297,25 @@ def trajectory_set():
             # if not dense enough, density will be accomplished with new iteration
             else:
                 continue
-        # coordinates of midpoint on the line between outer intersections (Outer Midpoint)
-        XOM, YOM = (XROI + XLOI) / 2, (YROI + YLOI) / 2
-        # following trajectory reversed list (X and Y coords)
-        FTR = [TS[iti + 1][1][0][-1::-1], TS[iti + 1][1][1][-1::-1]]
-        # finds intersection of arc distance and particular segment on the arc
-        for i in range(len(FTR[0])-1):
-            XA, YA = calculate_intersection(XOM, YOM, XII, YII, FTR[0][i], FTR[1][i], FTR[0][i+1], FTR[1][i+1])
-            # checking if the intersection is really on the segment, if so, the Distance of Arc from Inner Intersection is calculated
-            if FTR[0][i] >= XA >= FTR[0][i+1]:
-                DAII = ((XA-XII)**2 + (YA-YII)**2)**(1/2)
-                break
-        # controls - compare horizontal distance of intersections and distance of arc from inner intersection
-        if round(np.abs(XROI - XLOI)/RR) and round(DAII/RR):
+        # computation of Greatest Horizontal Width of Arc (triangle) which serves for stop criterion of densing iteration of one part of trajectory set
+        if YROI < YII:
+            # finds intersection of horizontal distance from inner intersection and particular segment on the arc of 1. following trajectory
+            XI, YI = calculate_intersection([XII, XROI], [YII, YII], TS[iti+1][1][0], TS[iti+1][1][1])
+            # Greatest Horizontal Width of Arc is calculated
+            GHWA = XI - XII
+        else:
+            if YROI < YLOI:
+                # finds intersection of horizontal distance from right intersection and particular segment on the arc of 2. following trajectory
+                XI, YI = calculate_intersection([XLOI, XROI], [YROI, YROI], TS[iti+2][1][0], TS[iti+2][1][1])
+                # Greatest Horizontal Width of Arc is calculated
+                GHWA = XROI - XI
+            else:
+                # finds intersection of horizontal distance from left intersection and particular segment on the arc of current trajectory
+                XI, YI = calculate_intersection([XLOI, XROI], [YLOI, YLOI], TS[iti][1][0], TS[iti][1][1])
+                # Greatest Horizontal Width of Arc is calculated
+                GHWA = XI - XLOI
+        # control whether arc (triangle) width criterion is met; when small enough, envelope is updated with new segments
+        if round(GHWA / RR*4):
             continue
         else:
             # with each shooting point the amount of these inserted auxiliary trajectories would almost double which could create pointless amount of trajectories
@@ -327,46 +335,22 @@ def trajectory_set():
                 TS[iti].append(update_envelope(0, ITR, 0, 0, 0, YII))
                 break
 
-def intersection_of_trajectories(t1i,t2i):
-    """Looks for intersection between two trajectories and returns its X and Y coordinates.
-    t1i and t2i are indexes of first and second trajectory between which the intersection is sought."""
-    # reversed lists of trajectories' coordinates as the algorithm starts from end points, TX1 = X coordinates of 1. trajectory
-    T1X, T1Y = TS[t1i][1][0][-1::-1], TS[t1i][1][1][-1::-1]
-    T2X, T2Y = TS[t2i][1][0][-1::-1], TS[t2i][1][1][-1::-1]
-    # X and Y coords of intersection (to be compared e.g. with XPI), i2s stands for radius around i2 (or index)
-    XI = YI = i2s = False
-    # following trajectory segment radius where the intersection will be sought
-    ftsr = [0, 1, -1, 2, -2]
-    # cycle that starts comparing coords of actual trajectory points from the end
-    for i1 in range(1, len(T1X)):
-        # cycle that starts comparing coords of following trajectory points from the end
-        for i2 in range(1, len(T2X)):
-            if T2Y[i2] > T1Y[i1] and T1X[i1] < T2X[i2 - 1]:
-                # when potentially intersecting segment of following trajectory is found, because of rare situations its 2 following and preceding segments have to be assessed
-                for i2s in ftsr:
-                    XI, YI = calculate_intersection(T1X[i1 - 1], T1Y[i1 - 1], T1X[i1], T1Y[i1],
-                                               T2X[i2 - 1 + i2s], T2Y[i2 - 1 + i2s], T2X[i2 + i2s],
-                                               T2Y[i2 + i2s])
-                    # making sure the intersection is between existing segments, not on their extension
-                    if T1X[i1 - 1] >= XI >= T1X[i1] and T2X[i2 - 1 + i2s] >= XI >= T2X[i2 + i2s]:
-                        break
-                    XI = YI = False
-            if XI or i2s == ftsr[-1]:
-                # i2s makes sure that if the intersection is not found in the 2 segment radius of following trajectory, index for segment of actual trajectory has to increase
-                i2s = False
-                break
-        if XI:
-            break
-    return XI, YI
-
-def calculate_intersection(x1, y1, x2, y2, x3, y3, x4, y4):
-    """Calculates intersection of 2 line segments and returns its X and Y coordinates"""
-    x1, y1, x2, y2, x3, y3, x4, y4 = x1, y1, x2, y2, x3, y3, x4, y4
-    XI = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / ((x1 - x2) * (y3 - y4) - (y1 - y2) *
-        (x3 - x4))
-    YI = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / ((x1 - x2) * (y3 - y4) - (y1 - y2) *
-        (x3 - x4))
-    return XI, YI
+def calculate_intersection(line1_x, line1_y, line2_x, line2_y):
+    """Looks for intersection between two linestrings (trajectories or lines) based on coords of points in argument
+    lists. Returns X and Y coordinates of the intersection."""
+    # create 1. empty linestring geometry
+    line1 = ogr.Geometry(ogr.wkbLineString)
+    # fill the geometry with points
+    for x, y in zip(line1_x, line1_y):
+        line1.AddPoint(x, y)
+    # create 2. empty linestring geometry
+    line2 = ogr.Geometry(ogr.wkbLineString)
+    # fill the 2. geometry with points
+    for x, y in zip(line2_x, line2_y):
+        line2.AddPoint(x, y)
+    # compute intersection and return X and Y separately
+    I = line1.Intersection(line2)
+    return I.GetX(), I.GetY()
 
 def update_envelope(method, ITR, XIIPR, XII, YII, YROI):
     """Updates envelope with parts of trajectories and returns starting and ending indexes of points on part of

@@ -31,3 +31,29 @@ def get_profile(end_cell, SP, IH):
         if s > cell_dist:
             break
     return profile
+
+"""
+to use, I add following code after throwshed function:
+    import get_profile
+    from matplotlib import pyplot as plt
+    end_cell = ogr.Geometry(ogr.wkbPoint)
+    end_cell.AddPoint(-488366, point_geom.GetY())
+    profile = get_profile.get_profile(end_cell,SP,IH)
+    plt.figure(figsize=(32, 18))
+    plt.plot(profile[0], profile[1], '-', linewidth=1)
+    mdti = TS.index((max(TS, key=lambda x: x[1][0][-1])))
+    for i in range(len(TS)):
+        plt.plot(TS[i][1][0], TS[i][1][1], '.-', linewidth=1)
+
+
+    # print(TStemp)
+    # plt.plot(TStemp[1][0], TStemp[1][1], '-', linewidth=1)
+    plt.xlim(190, 230)
+    plt.ylim(430, 485)
+    plt.xlabel('X')
+    plt.ylabel('Y')
+    plt.gca().set_aspect('equal', adjustable='box')
+    plt.savefig(f'filename.png', dpi=300)
+    plt.show()
+    exit()
+"""
