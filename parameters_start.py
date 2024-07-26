@@ -17,7 +17,7 @@ def main():
     point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\data\point\point.shp"   #path to point layer
     line_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\data\line\lines1.shp" #path to line layer
     throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\data\history\26_07_2024"  #path to folder, where the file will be saved
-    throwshed_file = r"after_change3"   #name of output throwshed file
+    throwshed_file = r"before_change2"   #name of output throwshed file
 
     ## SETTINGS
     throwshed_mode = 0 #what type of throwshed will be calculated, simple safety zone (cells within safety field) = 0, regular throwshed with trajectory assessment = 1

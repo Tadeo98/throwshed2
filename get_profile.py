@@ -33,7 +33,7 @@ def get_profile(end_cell, SP, IH):
     return profile
 
 """
-to use, I add following code after throwshed function:
+to use, I add following code after trajectory_set() function:
     import get_profile
     from matplotlib import pyplot as plt
     end_cell = ogr.Geometry(ogr.wkbPoint)

@@ -315,7 +315,7 @@ def trajectory_set():
                 # Greatest Horizontal Width of Arc is calculated
                 GHWA = XI - XLOI
         # control whether arc (triangle) width criterion is met; when small enough, envelope is updated with new segments
-        if round(GHWA / RR*4):
+        if round(GHWA / RR):
             continue
         else:
             # with each shooting point the amount of these inserted auxiliary trajectories would almost double which could create pointless amount of trajectories
