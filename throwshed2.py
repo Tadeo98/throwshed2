@@ -289,14 +289,17 @@ def trajectory_set():
                 LITR = [TS[iti+1][1][0][-1::-1], TS[iti+1][1][1][-1::-1]]
                 # update last but one trajectory with shared part starting and ending point indexes (on trajectory as on envelope)
                 TS[iti+1].append(update_envelope(0, LITR, 0, 0, 0, YROI))
+                # Highest Point Index of Last Trajectory
+                HPILT = TS[-1][1][1].index((max(TS[-1][1][1])))
                 envelope[0].append(0)
-                envelope[1].append(max(TS[-1][1][1]))
+                envelope[1].append(TS[-1][1][1][HPILT])
                 # update last trajectory (90 degrees one) with shared part starting and ending point indexes (on trajectory as on envelope)
-                TS[iti + 2].append([[TS[iti+2][1][1].index((max(TS[iti+2][1][1]))), TS[iti+2][1][1].index((max(TS[iti+2][1][1])))], [len(envelope[0])-1, len(envelope[0])-1]])
+                TS[-1].append([[HPILT, HPILT], [len(envelope[0])-1, len(envelope[0])-1]])
                 break
             # if not dense enough, density will be accomplished with new iteration
             else:
                 continue
+
         # computation of Greatest Horizontal Width of Arc (triangle) which serves for stop criterion of densing iteration of one part of trajectory set
         if YROI < YII:
             # finds intersection of horizontal distance from inner intersection and particular segment on the arc of 1. following trajectory
@@ -307,13 +310,12 @@ def trajectory_set():
             if YROI < YLOI:
                 # finds intersection of horizontal distance from right intersection and particular segment on the arc of 2. following trajectory
                 XI, YI = calculate_intersection([XLOI, XROI], [YROI, YROI], TS[iti+2][1][0], TS[iti+2][1][1])
-                # Greatest Horizontal Width of Arc is calculated
-                GHWA = XROI - XI
             else:
-                # finds intersection of horizontal distance from left intersection and particular segment on the arc of current trajectory
-                XI, YI = calculate_intersection([XLOI, XROI], [YLOI, YLOI], TS[iti][1][0], TS[iti][1][1])
-                # Greatest Horizontal Width of Arc is calculated
-                GHWA = XI - XLOI
+                # finds intersection of horizontal distance from right intersection and particular segment on the arc of 1. following trajectory; average of XROI and XLOI because XROI itself would mean intersection at ROI
+                XI, YI = calculate_intersection([XLOI, (XROI+XLOI)/2], [YROI, YROI], TS[iti+1][1][0], TS[iti+1][1][1])
+            # Greatest Horizontal Width of Arc is calculated
+            GHWA = XROI - XI
+
         # control whether arc (triangle) width criterion is met; when small enough, envelope is updated with new segments
         if round(GHWA / RR):
             continue
