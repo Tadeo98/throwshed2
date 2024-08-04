@@ -281,14 +281,10 @@ def trajectory_set():
         if TS[iti+2][0] == np.radians(90):
             # if X coordinate of last point in newly created trajectory is less than cell size, last possible area of the net was made dense enough (used to be X of highest point, but last was chosen so that when searching for cell intersecting trajectories no trajectories are added if the cell falls between 2 last trajectories with the last having 90° angle, which would cause problems in rare situations)
             if not np.floor(TS[iti+1][1][0][-1]/RR):
-                # Initial Trajectory Reversed list (X and Y coords)
-                ITR = [TS[iti][1][0][-1::-1], TS[iti][1][1][-1::-1]]
                 # update envelope with points from initial trajectory of last cycle, also update trajectory with shared part starting and ending point indexes (on trajectory as on envelope)
-                TS[iti].append(update_envelope(1, ITR, XIIPR, XROI, YROI, 0))
-                # Last Inserted Trajectory Reversed list (X and Y coords)
-                LITR = [TS[iti+1][1][0][-1::-1], TS[iti+1][1][1][-1::-1]]
+                TS[iti].append(update_envelope(1, TS[iti], XIIPR, XROI, YROI, 0))
                 # update last but one trajectory with shared part starting and ending point indexes (on trajectory as on envelope)
-                TS[iti+1].append(update_envelope(0, LITR, 0, 0, 0, YROI))
+                TS[iti+1].append(update_envelope(0, TS[iti+1], 0, 0, 0, YROI))
                 # Highest Point Index of Last Trajectory
                 HPILT = TS[-1][1][1].index((max(TS[-1][1][1])))
                 envelope[0].append(0)
@@ -322,19 +318,16 @@ def trajectory_set():
         else:
             # with each shooting point the amount of these inserted auxiliary trajectories would almost double which could create pointless amount of trajectories
             del TS[iti+1]
-            # initial trajectory reversed list (X and Y coords)
-            ITR = [TS[iti][1][0][-1::-1], TS[iti][1][1][-1::-1]]
             # update envelope and update trajectory list with starting and ending point index of shared part between trajectory and envelope, indexes will be used when looking for cell neighbouring trajectories
-            TS[iti].append(update_envelope(1, ITR, XIIPR, XII, YII, 0))
+            TS[iti].append(update_envelope(1, TS[iti], XIIPR, XII, YII, 0))
             # previous intersection for next cycle is assigned
             XIIPR, YIIPR = XII, YII
             # at least one of the conditions was met and the cycle can jump to next initial trajectory
             iti += 1
             # if the cycle comes to last trajectory, it breaks as there is no following trajectory
             if TS[iti][0] == AL[-1]:
-                # even last trajectory needs to be updated with indexes
-                ITR = [TS[iti][1][0][-1::-1], TS[iti][1][1][-1::-1]]
-                TS[iti].append(update_envelope(0, ITR, 0, 0, 0, YII))
+                # even last trajectory needs to be updated with indexes and envelope will be finished
+                TS[iti].append(update_envelope(0, TS[iti], 0, 0, 0, YII))
                 break
 
 def calculate_intersection(line1_x, line1_y, line2_x, line2_y):
@@ -354,23 +347,25 @@ def calculate_intersection(line1_x, line1_y, line2_x, line2_y):
     I = line1.Intersection(line2)
     return I.GetX(), I.GetY()
 
-def update_envelope(method, ITR, XIIPR, XII, YII, YROI):
+def update_envelope(method, TRAJ, XIIPR, XII, YII, YIPR):
     """Updates envelope with parts of trajectories and returns starting and ending indexes of points on part of
     trajectory that is shared with the envelope and also indexes of points on envelope that are boundaries of the
     shared trajectory part (previous and actual inner intersections). Trajectory points have to be between the envelope
     points."""
     global envelope
+    # Reversed Trajectory list (X and Y coords)
+    RT = [TRAJ[1][0][-1::-1], TRAJ[1][1][-1::-1]]
     # for regular parts
     if method:
         # on reversed trajectory, index of first point that will be incorporated within the envelope is found
-        for i in range(len(ITR[0]) - 1):
-            if ITR[0][i] >= XIIPR >= ITR[0][i + 1]:
+        for i in range(len(RT[0]) - 1):
+            if RT[0][i] >= XIIPR >= RT[0][i + 1]:
                 # Envelope Part Starting Point Index
                 EPSPI = i + 1
                 break
         # on reversed trajectory, index of last point that will be incorporated within the envelope is found
-        for i in range(EPSPI - 1, len(ITR[0]) - 1):
-            if ITR[0][i] >= XII >= ITR[0][i + 1]:
+        for i in range(EPSPI - 1, len(RT[0]) - 1):
+            if RT[0][i] >= XII >= RT[0][i + 1]:
                 # Envelope Part Ending Point Index
                 EPEPI = i
                 break
@@ -380,34 +375,34 @@ def update_envelope(method, ITR, XIIPR, XII, YII, YROI):
         if EPEPI >= EPSPI:
             # envelope is updated with all points between starting and ending point
             for i in range(EPSPI, EPEPI + 1):
-                envelope[0].append(ITR[0][i])
-                envelope[1].append(ITR[1][i])
+                envelope[0].append(RT[0][i])
+                envelope[1].append(RT[1][i])
         # ending envelope index as the index of envelope's last point after update
         EEI = len(envelope[0])
         # lastly, envelope is updated with the inner intersection point
         envelope[0].append(XII)
         envelope[1].append(YII)
         # return indexes of the first and last point of shared part, for trajectory direction of incrementing is from the left (shooting point), for envelope it's vice-versa
-        return [[len(ITR[0]) - 1 - EPSPI, len(ITR[0]) - 1 - EPEPI], [SEI, EEI]]
+        return [[len(RT[0]) - 1 - EPSPI, len(RT[0]) - 1 - EPEPI], [SEI, EEI]]
     # for part of last but one trajectory when alpha of the last one is equal to 90° or part of last trajectory whose alpha is not equal to 90°
     else:
-        # starting envelope index as the index of envelope's last point before update, for last but one trajectory
+        # starting envelope index as the index of envelope's last point before update
         SEI = len(envelope[0]) - 1
         # starting and ending last but one trajectory point indexes
         EPSPI = 0
         # last points from last inserted trajectory and highest point of last trajectory are appended to envelope
-        for i in range(len(ITR[0])):
-            if ITR[1][i] > YROI:
+        for i in range(len(RT[0])):
+            if RT[1][i] > YIPR:
                 if not EPSPI:
                     EPSPI = i
-                envelope[0].append(ITR[0][i])
-                envelope[1].append(ITR[1][i])
-            if ITR[0][i] == ITR[0][ITR[1].index((max(ITR[1])))]:
+                envelope[0].append(RT[0][i])
+                envelope[1].append(RT[1][i])
+            if RT[1][i] == max(RT[1]):
                 break
         EPEPI = i - 1
-        # ending envelope index as the index of envelope's last point after update, for last but one trajectory
+        # ending envelope index as the index of envelope's last point after update
         EEI = len(envelope[0]) - 1
-        return [[len(ITR[0]) - 1 - EPSPI, len(ITR[0]) - 1 - EPEPI], [SEI, EEI]]
+        return [[len(RT[0]) - 1 - EPSPI, len(RT[0]) - 1 - EPEPI], [SEI, EEI]]
 
 def create_trajectory_fields():
     """Creates ATF - Ascending Trajectory Field and DTF - Descending Trajectory Field. Lists are made into polygons."""
@@ -422,13 +417,10 @@ def create_trajectory_fields():
         ATF_polygon = create_polygon_from_coords_list(ATF)
     # in this case both ATF and DTF are created
     else:
-        # find out index of coords from last trajectory, where envelope connects with it
-        for i in range(len(TS[-1][1][0])-1):
-            # for last trajectory with shooting angle 90 degrees this stops immediately, to ATF is added first point of last trajectory, which still creates correct polygon
-            if TS[-1][1][0][i] <= envelope[0][-1] <= TS[-1][1][0][i+1]:
-                break
-        ATF[0] = TS[0][1][0] + envelope[0] + TS[-1][1][0][i::-1]
-        ATF[1] = TS[0][1][1] + envelope[1] + TS[-1][1][1][i::-1]
+        # index of coords from last trajectory, where envelope connects with it
+        i = TS[-1][2][0][1]
+        ATF[0] = TS[0][1][0] + envelope[0] + TS[-1][1][0][i-1::-1]
+        ATF[1] = TS[0][1][1] + envelope[1] + TS[-1][1][1][i-1::-1]
         # but for DTF with last trajectory shooting angle being 90 degrees, i is edited so that only last point down at min DEM height is added to polygon
         i = -2 if TS[-1][0] == np.radians(90) else i
         DTF[0] = envelope[0] + TS[-1][1][0][i+1:] + envelope[0][:1]
@@ -480,7 +472,7 @@ def assign_values_to_throwshed(k):
             # detect cell within the fields and call function to find cell intersecting trajectory and to determine whether the cell is reachable without any obstacles
             if ATF_polygon.Intersects(relative_cell):
                 if TM:
-                    if find_intersecting_trajectory(1, relative_cell, absolute_cell):
+                    if cell_availability(1, relative_cell, absolute_cell):
                         TA[0][i][j] += 1
                 # for the case only cell's presence within the field is assessed
                 else:
@@ -489,47 +481,48 @@ def assign_values_to_throwshed(k):
             if DTF_polygon:
                 if DTF_polygon.Intersects(relative_cell):
                     if TM:
-                        if find_intersecting_trajectory(-1, relative_cell, absolute_cell):
+                        if cell_availability(-1, relative_cell, absolute_cell):
                             TA[1][i][j] += 1
                     # for the case only cell's presence within the field is assessed
                     else:
                         TA[1][i][j] += 1
 
-def find_intersecting_trajectory(dir, relative_cell, absolute_cell):
+def cell_availability(dir, relative_cell, absolute_cell):
     """Finds trajectory that intersects the cell (or is close enough, within allowed distance). For ATF cycle
     increments from start to end of trajectory set and viceversa for DTF. Returns True if the cell is accessible
-    or False if the cell is not accessible without any obstacles - this is determined further function."""
+    or False if the cell is not accessible without any obstacles - this is determined by further function."""
     # Most Distant Trajectory Index
     MDTI = TS.index((max(TS, key=lambda x: x[1][0][-1])))
+    # Zooming Index list containing indexes of assessed trajectories, for descending direction, first index is the one of the trajectory with furthest reach
     if dir == -1:
-        # Zooming Index List containing indexes of assessed trajectories, for descending direction, first index is the one of the trajectory with furthest reach
-        ZIL = [MDTI, int(MDTI + (len(TS)-MDTI) / 2), len(TS) - 1]
+        ZI = [MDTI, int(MDTI + (len(TS)-MDTI) / 2), len(TS) - 1]
     else:
-        ZIL = [0, int(len(TS) / 2), len(TS) - 1]
+        ZI = [0, int(len(TS) / 2), len(TS) - 1]
     # cycle for zooming into the polygon of cell neighbouring trajectories
     while True:
-        for j in [0, 1]:
-            if dir == -1:
-                # polygon also consists of envelope (starting and ending indexes of points of shared parts by trajectory and envelope are used)
-                polygon = create_polygon_from_coords_list([envelope[0][TS[ZIL[j]][2][1][0]+1:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][0]+1:] + TS[ZIL[j]][1][0][-1:TS[ZIL[j]][2][0][0]-1:-1], envelope[1][TS[ZIL[j]][2][1][0]+1:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][0]+1:] + TS[ZIL[j]][1][1][-1:TS[ZIL[j]][2][0][0]-1:-1]])
+        if dir == -1:
+            # polygon also consists of envelope (starting and ending indexes of points of shared parts by trajectory and envelope are used)
+            polygon = create_polygon_from_coords_list([envelope[0][TS[ZI[0]][2][1][0] + 1:TS[ZI[1]][2][1][0] + 1] +TS[ZI[1]][1][0][TS[ZI[1]][2][0][0] + 1:] +TS[ZI[0]][1][0][-1:TS[ZI[0]][2][0][0] - 1:-1], envelope[1][TS[ZI[0]][2][1][0] + 1:TS[ZI[1]][2][1][0] + 1] +TS[ZI[1]][1][1][TS[ZI[1]][2][0][0] + 1:] +TS[ZI[0]][1][1][-1:TS[ZI[0]][2][0][0] - 1:-1]])
+        else:
+            # very basic situation, envelope needs not to be used
+            if ZI[1] <= MDTI:
+                polygon = create_polygon_from_coords_list([TS[ZI[0]][1][0] + TS[ZI[1]][1][0][-1::-1], TS[ZI[0]][1][1] + TS[ZI[1]][1][1][-1::-1]])
+            # situation where at least second trajectory is already intersecting other trajectories with further reach
             else:
-                # very basic situation, envelope needs not to be used
-                if ZIL[j+1] <= MDTI:
-                    polygon = create_polygon_from_coords_list([TS[ZIL[j]][1][0] + TS[ZIL[j + 1]][1][0][-1::-1], TS[ZIL[j]][1][1] + TS[ZIL[j + 1]][1][1][-1::-1]])
-                # situation where at least second trajectory is already intersecting other trajectories with further reach
+                # situation where first of the trajectories is the one with furthest reach or the ones following
+                if ZI[0] >= MDTI:
+                    polygon = create_polygon_from_coords_list([TS[ZI[0]][1][0][:TS[ZI[0]][2][0][1]] + envelope[0][TS[ZI[0]][2][1][1]:TS[ZI[1]][2][1][1] + 1] +TS[ZI[1]][1][0][TS[ZI[1]][2][0][1] - 1::-1],TS[ZI[0]][1][1][:TS[ZI[0]][2][0][1]] + envelope[1][TS[ZI[0]][2][1][1]:TS[ZI[1]][2][1][1] + 1] +TS[ZI[1]][1][1][TS[ZI[1]][2][0][1] - 1::-1]])
+                # situation where first of the trajectories precedes trajectory with furthest reach
                 else:
-                    # situation where first of the trajectories is the one with furthest reach or the ones following
-                    if ZIL[j] >= MDTI:
-                        polygon = create_polygon_from_coords_list([TS[ZIL[j]][1][0][:TS[ZIL[j]][2][0][1]] + envelope[0][TS[ZIL[j]][2][1][1]:TS[ZIL[j+1]][2][1][1]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][1]-1::-1], TS[ZIL[j]][1][1][:TS[ZIL[j]][2][0][1]] + envelope[1][TS[ZIL[j]][2][1][1]:TS[ZIL[j+1]][2][1][1]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][1]-1::-1]])
-                    # situation where first of the trajectories precedes trajectory with furthest reach
-                    else:
-                        polygon = create_polygon_from_coords_list([TS[ZIL[j]][1][0] + envelope[0][:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][0][TS[ZIL[j+1]][2][0][0]::-1], TS[ZIL[j]][1][1] + envelope[1][:TS[ZIL[j+1]][2][1][0]+1] + TS[ZIL[j + 1]][1][1][TS[ZIL[j+1]][2][0][0]::-1]])
-            if polygon.Intersects(relative_cell):
-                break
-        if abs(ZIL[j + 1] - ZIL[j]) == 1:
-            i = ZIL[j]
+                    polygon = create_polygon_from_coords_list([TS[ZI[0]][1][0] + envelope[0][:TS[ZI[1]][2][1][0] + 1] +TS[ZI[1]][1][0][TS[ZI[1]][2][0][0]::-1],TS[ZI[0]][1][1] + envelope[1][:TS[ZI[1]][2][1][0] + 1] +TS[ZI[1]][1][1][TS[ZI[1]][2][0][0]::-1]])
+        if polygon.Intersects(relative_cell):
+            ZI = [ZI[0], int((ZI[0] + ZI[1] ) / 2), ZI[1]]
+        else:
+            ZI = [ZI[1], int((ZI[1] + ZI[2]) / 2), ZI[2]]
+        if abs(ZI[0] - ZI[2]) == 1:
+            i = ZI[0]
             break
-        ZIL = [ZIL[j], int(ZIL[j] + (ZIL[j + 1] - ZIL[j]) / 2), ZIL[j + 1]]
+
     # auxiliary indexes
     i1, i2 = -1, -1
     # Intersecting Trajectory Found list informing whether the previous and following intersecting trajectories were already found and compared with the terrain
@@ -540,6 +533,8 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell):
     ITIS = 0
     # at first, 2 surrounding trajectories are found by making polygon out of them and asking whether the cell lies within
     while True:
+        # create polygon with existing/inserted trajectories
+        polygon = create_polygon_from_coords_list([TS[i][1][0] + TS[i + 1][1][0][-1::-1], TS[i][1][1] + TS[i + 1][1][1][-1::-1]])
         # if the cell lies within, normals are computed to assess the smallest perpendicular distance from trajectory to cell
         if polygon.Intersects(relative_cell):
             # Inserted Trajectories Starting Index
@@ -575,19 +570,20 @@ def find_intersecting_trajectory(dir, relative_cell, absolute_cell):
             # index i needs to be set one less to start again at the same trajectory
             # auxiliary index i1/2 to find out if the normal1/2 was already computed, will be used in next iteration
             i -= 1
-            i1 = i
+            i1 = i + 1
             i2 = i + 2
             # 1 trajectory added to the index span
             ITIS += 1
         i += 1
-        # create polygon with inserted trajectory/ies
-        polygon = create_polygon_from_coords_list([TS[i][1][0] + TS[i + 1][1][0][-1::-1], TS[i][1][1] + TS[i + 1][1][1][-1::-1]])
 
 def compute_normal(i, X_relative_cell, Y_relative_cell):
     """Computes perpendicular distance from closest segment of given trajectory and returns its size as well as index
     of first point of closest segment."""
     # Trajectory Point - Cell Distance List
     TPCDL = [((TS[i][1][0][j] - X_relative_cell) ** 2 + (TS[i][1][1][j] - Y_relative_cell) ** 2) ** (1 / 2) for j in range(len(TS[i][1][0]))]
+    # if closest point to cell mid point is closer than allowed distance, this distance is returned as there is no need to compute perpendicular distance to whole segment which can be only smaller than the point-cell distance
+    if not np.round(min(TPCDL) / RR):
+        return min(TPCDL)
     # index of closest point to cell is found
     j = TPCDL.index(min(TPCDL))
     # index of first of two closest points to cell is found
@@ -596,9 +592,6 @@ def compute_normal(i, X_relative_cell, Y_relative_cell):
             j -= 1
     elif j == len(TPCDL) - 1:
         j -= 1
-    # if closest point to cell mid point is closer than allowed distance, this distance is returned as there is no need to compute perpendicular distance to whole segment which can be only smaller than the point-cell distance
-    if not np.round(min(TPCDL) / RR):
-        return min(TPCDL)
     # calculate perpendicular distance (normal) from closest trajectory segment
     a = TPCDL[j]
     b = TPCDL[j + 1]
@@ -613,8 +606,8 @@ def trajectory_terrain_comparison(i, relative_cell, absolute_cell):
     # calculate azimuth of trajectory (shooting point to cell point), there is a chance of Y difference to be 0, therefore the exception
     dX = absolute_cell.GetX() - SP.GetX()
     dY = absolute_cell.GetY() - SP.GetY()
-    # for the case where shooting point and middle point of assessed cell are same, automatically reachable
-    if not dX and not dY:
+    # for case when the shooting point is right on teh cell, cell is automatically reachable
+    if not round(dX/RR) and not round(dY/RR):
         return True
     try:
         Azimuth = np.arctan(dX / dY)

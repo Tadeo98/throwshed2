@@ -16,11 +16,11 @@ def main():
     dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\data\dem\dmr_clip.tif" #path to DEM
     point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\data\point\point.shp"   #path to point layer
     line_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\data\line\lines1.shp" #path to line layer
-    throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\data\history\01_08_2024"  #path to folder, where the file will be saved
-    throwshed_file = r"test"   #name of output throwshed file
+    throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\data\history\04_08_2024"  #path to folder, where the file will be saved
+    throwshed_file = r"test5"   #name of output throwshed file
 
     ## SETTINGS
-    throwshed_mode = 0 #what type of throwshed will be calculated, simple safety zone (cells within safety field) = 0, regular throwshed with trajectory assessment = 1
+    throwshed_mode = 1 #what type of throwshed will be calculated, simple safety zone (cells within safety field) = 0, regular throwshed with trajectory assessment = 1
     use_viewshed = 0 #utilization of viewshed, that will clip throwshed, No = 0, Yes = 1
     use_lines = 0 #utilization of line layer, where lines serve as obstacles or walls and will be burnt into DEM, No = 0, Yes = 1
     band_number = 1 #selected band from DEM, default = 1
