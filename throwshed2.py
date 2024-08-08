@@ -28,6 +28,9 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
     if alpha_max < alpha_min:
         print("Minimal vertical shooting angle higher than maximal.")
         exit()
+    if not -90 <= alpha_max <= 90 or not -90 <= alpha_min <= 90:
+        print("Minimal or maximal vertical shooting angle out of allowed range <-90°,+90°>.")
+        exit()
     # Global variables
     global SRS, DP, PLP, TOF, TF, TM, UV, UL, CT, ATM, TSD, IP, NM, BN, INT, BF, TSS, RR, AL, DDS, DB, DA, DGT, DMINH, \
         DMAXH, IH, IV, D2M, T0, DIA, M, CSA, GA, AD, EH, TH, PD, PA, OD, OF, NDV, TA, VDS, VB, VA, VGT
@@ -312,8 +315,8 @@ def trajectory_set():
             # Greatest Horizontal Width of Arc is calculated
             GHWA = XROI - XI
 
-        # control whether arc (triangle) width criterion is met; when small enough, envelope is updated with new segments
-        if round(GHWA / RR):
+        # control whether arc (triangle) width (or height) criterion is met; when small enough, envelope is updated with new segments
+        if round(GHWA / RR) and round((max(TS[iti+1][1][1]) - YII) / RR):
             continue
         else:
             # with each shooting point the amount of these inserted auxiliary trajectories would almost double which could create pointless amount of trajectories
@@ -452,8 +455,8 @@ def assign_values_to_throwshed(k):
             if not k and DA[i][j] == NDV:
                 TA[0][i][j] = TA[1][i][j] = NDV
                 continue
-            # for simple throwshed, if cell already has value 1, cycle continues with following cell, otherwise for cumulative throwshed, cell is assessed
-            if k and CT == 0 and TA[0][i][j]:
+            # for simple throwshed, if cell already has value 1, cycle continues with following cell, otherwise for cumulative throwshed, cell is assessed, descending trajectory does not need to be checked because if the cell is hittable by ascending trajectory, it has to be hittable by descending as well
+            if k and not CT and TA[0][i][j]:
                 continue
             # if viewshed is incorporated and particular cell is not visible, nothing is added to throwshed cell, and for visible cells the algorithm proceeds with assessment of cells
             if UV:
@@ -477,8 +480,8 @@ def assign_values_to_throwshed(k):
                 # for the case only cell's presence within the field is assessed
                 else:
                     TA[0][i][j] += 1
-            # can be None
-            if DTF_polygon:
+            # can be None and also if CT is 0 and cell has a value already, no intersecting trajectory is found
+            if DTF_polygon and not (not CT and TA[1][i][j]):
                 if DTF_polygon.Intersects(relative_cell):
                     if TM:
                         if cell_availability(-1, relative_cell, absolute_cell):

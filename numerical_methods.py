@@ -56,23 +56,26 @@ def euler2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, P
     # incomplete drag formula - without drag coefficient and velocity (fixed auxiliary parameter)
     C_i = -AD * CSA / (2 * M)
     V_x, V_y = V * np.cos(VA), V * np.sin(VA)
+    # set X element of velocity to 0 if the value is too small (for shooting angle -90 or 90 degrees when V_x is calculated as 1e-16)
+    if V_x < 0.0000000001:
+        V_x = 0
     # set trajectory segment width to given trajectory segment size
-    TSW = TSS
+    TSW = TSS if V_x else 0
     # cycle going through all trajectory elements
     while True:
         # for the case of TSS being entered as length (not width), width has to be computed
         if TSD:
-            TSW = TSS*np.cos(np.arctan(V_y/V_x))
+            TSW = TSS*np.cos(np.arctan(V_y/V_x)) if V_x else 0
         # X,Y steps added to points list (and Time increased)
         points[0].append(points[0][-1]+TSW)
-        points[1].append(points[1][-1] + V_y / V_x * TSW)
+        points[1].append(points[1][-1] + (V_y / V_x * TSW if V_x else TSS*V_y/abs(V_y)))
         # time and CDBT increases if there is a frequency
         if OF:
-            T += TSW / V_x
+            T += TSW / V_x if V_x else TSS / abs(V_y)
             if TSD:
                 CDBT += TSS
             else:
-                CDBT += TSW/np.cos(np.arctan(V_y/V_x))
+                CDBT += TSW/np.cos(np.arctan(V_y/V_x)) if V_x else TSS
         # when last height is less than minimal DEM height, cycle breaks and last values are reinterpolated into minimal DEM height (to prevent errors in extreme situations of further functions)
         if points[1][-1] <= DMINH:
             # if the shooting point is on the cell with minimal height of DEM, there will be only 2 points for trajectories starting with angle <= 0 and these points can't be the same, so this is the only exception where last points of trajectories are not recalculated (interpolated) to minimal DEM height
@@ -97,11 +100,11 @@ def euler2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, P
         # for oscillating/rotating objects (irregular projectiles, wobbling arrows) drag and area are adjusted according to frequency and max distance, after OD there is only regular drag and area if there's frequency at all
         if not OF:
             # no oscillation, element in [1/m] containing parameters with recalculated air density and the independent value is changed from time to range x
-            C_D_x = C_i*C_D*V*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
+            C_D_x = C_i*C_D*V*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/(V_x if V_x else abs(V_y))
         else:
             if OD != 0 and CDBT >= OD:
                 # no adjustments
-                C_D_x = C_i * C_D * V * np.exp(-(atm.h[atm_t][0] + atm.h[atm_t][1] * Y) * Y) / V_x
+                C_D_x = C_i * C_D * V * np.exp(-(atm.h[atm_t][0] + atm.h[atm_t][1] * Y) * Y) / (V_x if V_x else abs(V_y))
             else:
                 # oscillation coefficient computed goniometrically from the current state of the projectile (ranges from regular position 0 to peak 1)
                 OC = abs(np.sin((T*OF)%1*2*np.pi))
@@ -114,12 +117,12 @@ def euler2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, P
                 C_D_c = C_D + DDIFF
                 # C_i with added cross-sectional area according to current state of the projectile
                 C_i_c = -AD * (CSA+ADIFF) / (2 * M)
-                C_D_x = C_i_c*C_D_c*V*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
+                C_D_x = C_i_c*C_D_c*V*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/(V_x if V_x else abs(V_y))
         # elements in [1/s] simply called frequency, will be multiplied by the range step size
         F_x = C_D_x*V_x
-        F_y = C_D_x*V_y-G/V_x
+        F_y = C_D_x*V_y-G/(V_x if V_x else abs(V_y))
         # new velocity elements
-        V_x, V_y = V_x + F_x*TSW, V_y + F_y*TSW
+        V_x, V_y = V_x + F_x*TSW, V_y + (F_y*TSW if V_x else F_y*TSS)
     return points
 
 def euler3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH):
@@ -239,15 +242,18 @@ def heun2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, PA
     # incomplete drag formula - without drag coefficient and velocity (fixed auxiliary parameter)
     C_i = -AD * CSA / (2 * M)
     V_x, V_y = V * np.cos(VA), V * np.sin(VA)
+    # set X element of velocity to 0 if the value is too small (for shooting angle -90 or 90 degrees when V_x is calculated as 1e-16)
+    if V_x < 0.0000000001:
+        V_x = 0
     # set trajectory segment width to given trajectory segment size
-    TSW = TSS
+    TSW = TSS if V_x else 0
     # set new trajectory segment width to given trajectory segment size
-    TSW_n = TSS
+    TSW_n = TSS if V_x else 0
     # cycle going through all trajectory elements
     while True:
         # for the case of TSS being entered as length (not width), width has to be computed
         if TSD:
-            TSW = TSS * np.cos(np.arctan(V_y / V_x))
+            TSW = TSS * np.cos(np.arctan(V_y / V_x)) if V_x else 0
         # velocity
         V = (V_x**2 + V_y**2)**(1/2)
         # temperature at relative height Y (above/below shooting site)
@@ -260,13 +266,13 @@ def heun2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, PA
         # interpolate Drag Coefficient (or can be constant)
         C_D = interpolate_C_D(C_D_t, Mach)
         # element in [1/m] containing parameters with recalculated air density and the independent value is changed from time to range x
-        C_D_x = C_i*C_D*V*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/V_x
+        C_D_x = C_i*C_D*V*np.exp(-(atm.h[atm_t][0]+atm.h[atm_t][1]*Y)*Y)/(V_x if V_x else abs(V_y))
         # elements in [1/s] simply called frequency, will be multiplied by the range step size
         F_x = C_D_x*V_x
-        F_y = C_D_x*V_y-G/V_x
+        F_y = C_D_x*V_y-G/(V_x if V_x else abs(V_y))
         # PREDICTOR - CORRECTOR APPLICATION, NEW PARAMETERS
         # new velocity elements
-        V_x_n, V_y_n = V_x + F_x*TSW, V_y + F_y*TSW
+        V_x_n, V_y_n = V_x + F_x*TSW, V_y + (F_y*TSW if V_x else F_y*TSS)
         # new velocity
         V_n = (V_x_n ** 2 + V_y_n ** 2) ** (1 / 2)
         # Mach number
@@ -274,29 +280,29 @@ def heun2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, PA
         # interpolate Drag Coefficient (or can be constant)
         C_D_n = interpolate_C_D(C_D_t, Mach_n)
         # drag coefficient with recalculated air density and the independent value is changed from time to range x
-        C_D_x_n = C_i * C_D_n * V_n * np.exp(-(atm.h[atm_t][0] + atm.h[atm_t][1] * Y) * Y) / V_x_n
+        C_D_x_n = C_i * C_D_n * V_n * np.exp(-(atm.h[atm_t][0] + atm.h[atm_t][1] * Y) * Y) / (V_x_n if V_x_n else abs(V_y_n))
         # elements in [1/s] simply called frequency, will be multiplied by the range step size
         F_x_n = C_D_x_n * V_x_n
-        F_y_n = C_D_x_n * V_y_n - G / V_x_n
+        F_y_n = C_D_x_n * V_y_n - G / (V_x_n if V_x_n else abs(V_y_n))
         # for the case of TSS being entered as length (not width), width for new (second) element has to be computed
         if TSD:
-            TSW_n = TSS * np.cos(np.arctan(V_y_n / V_x_n))
+            TSW_n = TSS * np.cos(np.arctan(V_y_n / V_x_n)) if V_x_n else 0
         # recalculated new velocity elements with applied corrector
-        V_x_c, V_y_c = V_x + (F_x*TSW+F_x_n*TSW_n)/2, V_y + (F_y*TSW+F_y_n*TSW_n)/2
+        V_x_c, V_y_c = V_x + (F_x*TSW+F_x_n*TSW_n)/2, V_y + ((F_y*TSW+F_y_n*TSW_n)/2 if V_x_n else F_y_n*TSS)
         # in point of trajectory, where the projectile starts to fall down, no corrector is applied, it is as in euler method (averaging values from these two elements creates undesired results)
         if V_y_c/V_y < 0:
             # X,Y,Z steps added to points list
             points[0].append(points[0][-1] + TSW)
-            points[1].append(points[1][-1] + V_y/V_x * TSW)
+            points[1].append(points[1][-1] + (V_y/V_x * TSW if V_x else TSS*V_y/abs(V_y)))
             # T += TSW/V_x
         # normally applied corrector
         else:
             # at last, TSW has to be recalculated according to the average of the velocities
             if TSD:
-                TSW = TSS * np.cos(np.arctan((V_y + V_y_c) / (V_x + V_x_c)))
+                TSW = TSS * np.cos(np.arctan((V_y + V_y_c) / (V_x + V_x_c))) if V_x and V_x_n else 0
             # X,Y,Z steps added to points list
             points[0].append(points[0][-1]+TSW)
-            points[1].append(points[1][-1] + (V_y + V_y_c) / (V_x + V_x_c) * TSW)
+            points[1].append(points[1][-1] + ((V_y + V_y_c) / (V_x + V_x_c) * TSW if V_x and V_x_n else TSS*(V_y + V_y_c)/abs((V_y + V_y_c))))
             #T += 2*TSW/(V_x + V_x_c)
         # when last height is less than minimal DEM height, cycle breaks and last values are reinterpolated into minimal DEM height (to prevent errors in extreme situations of further functions)
         if points[1][-1] <= DMINH:
