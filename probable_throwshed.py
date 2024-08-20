@@ -149,7 +149,7 @@ PTF = r"probable_velocity_normal_n20_s5_single_simple_f60_d20"  # name of output
 
 ## SETTINGS
 throwshed_mode = 0  # what type of throwshed will be calculated, simple safety zone (cells within safety field) = 0, regular throwshed with trajectory assessment = 1
-use_viewshed = 0  # utilization of viewshed, that will clip throwshed, No = 0, Yes = 1
+use_viewshed = 0 #utilization of viewshed, that will clip throwshed, No viewshed = 0, Clip by visible areas = 1, Clip by invisible areas = -1
 use_lines = 0  # utilization of line layer, where lines serve as obstacles or walls and will be burnt into DEM, No = 0, Yes = 1
 band_number = 1  # selected band from DEM, default = 1
 interpolation = 0  # interpolation of DEM to calculate altitude of shooting point or compare points within the DEM-to-trajectory comparison function, Nearest neighbour = 0, Bilinear = 1

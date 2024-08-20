@@ -13,15 +13,15 @@ import throwshed2
 def main():
     #######################################################################
     ## PATHS
-    dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\case_study\Neumann_Trnava_Trstin\projekt\data\DMR_10m.tif" #path to DEM
-    point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\case_study\Neumann_Trnava_Trstin\projekt\data\12_cm_GrW_42.shp"   #path to point layer
+    dem_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\data\dem\dmr_clip.tif" #path to DEM
+    point_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\data\point\point.shp"   #path to point layer
     line_layer_path = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\data\line\lines1.shp" #path to line layer
-    throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\case_study\Neumann_Trnava_Trstin\projekt\data"  #path to folder, where the file will be saved
-    throwshed_file = r"test1"   #name of output throwshed file
+    throwshed_output_folder = r"D:\School\STU_SvF_BA\Term11\Dizertacna_praca\data\history\20_08_2024"  #path to folder, where the file will be saved
+    throwshed_file = r"throwshed_inverse_viewshed"   #name of output throwshed file
 
     ## SETTINGS
-    throwshed_mode = 0 #what type of throwshed will be calculated, simple safety zone (cells within safety field) = 0, regular throwshed with trajectory assessment = 1
-    use_viewshed = 0 #utilization of viewshed, that will clip throwshed, No = 0, Yes = 1
+    throwshed_mode = 1 #what type of throwshed will be calculated, simple safety zone (cells within safety field) = 0, regular throwshed with trajectory assessment = 1
+    use_viewshed = -1 #utilization of viewshed, that will clip throwshed, No viewshed = 0, Clip by visible areas = 1, Clip by invisible areas = -1
     use_lines = 0 #utilization of line layer, where lines serve as obstacles or walls and will be burnt into DEM, No = 0, Yes = 1
     band_number = 1 #selected band from DEM, default = 1
     interpolation = 0 #interpolation of DEM to calculate altitude of shooting point or compare points within the DEM-to-trajectory comparison function, Nearest neighbour = 0, Bilinear = 1
@@ -30,20 +30,20 @@ def main():
     atmosphere_type = 1 #standard atmospheres - Army Standard Metro (0) and ICAO (1)
     numerical_method = "euler2D" #numerical method that calculates the ballistic trajectory, string that can be euler2D (in vertical plane only), euler3D, heun2D, heun3D
     trajectory_segment_dimension = 1 #decides whether trajectory segment size stands for its width (horizontal) = 0, or length (slant) = 1 (if set to width, shooting angles close to -90 and 90 are dangerous to use as minimum and maximum of the range)
-    irregular_projectile = 0 #use diameter to calculate symmetric circle cross-sectional area of projectile = 0, use cross_sectional_area for irregular shape of the projectile = 1
+    irregular_projectile = 1 #use diameter to calculate symmetric circle cross-sectional area of projectile = 0, use cross_sectional_area for irregular shape of the projectile = 1
 
 
     ## VARIABLES
-    initial_height = 1.8 #initial height of projectile above DEM when shot [m]
-    alpha_min = 45.0 #minimum of vertical angle range at which the projectile is shot [°]
-    alpha_max = 84.0 #maximum of vertical angle range at which the projectile is shot [°]
+    initial_height = 1.7 #initial height of projectile above DEM when shot [m]
+    alpha_min = -90.0 #minimum of vertical angle range at which the projectile is shot [°]
+    alpha_max = 90.0 #maximum of vertical angle range at which the projectile is shot [°]
     gravitational_acceleration = 9.81 #gravitational acceleration [m/s^2]
-    initial_velocity = 122 #initial velocity of projectile when shot [m/s]
+    initial_velocity = 67 #initial velocity of projectile when shot [m/s]
     temperature = 15 #air temperature at shooting site [°C]
     air_density = 1.225 #air density [kg/m^3]
-    drag_to_mach = 15.0 #aerodynamic drag coefficient of projectile (constant, list or drag table)
+    drag_to_mach = 3.34 #aerodynamic drag coefficient of projectile (constant, list or drag table)
     diameter = 0.12 #diameter of the projectile [m]
-    mass = 15.8 #projectile mass [kg]
+    mass = 0.0615 #projectile mass [kg]
     cross_sectional_area = 0.0000938 #cross sectional area of the projectile, used instead of diameter when the projectile is irregular [m^2]
     trajectory_segment_size = None #distance step (length or width), at which trajectory's points will be saved and compared to DEM [m], None = adjusted to DEM resolution (cell's size), any float/int value = customized distance step (equal or less than raster resolution)
     eyes_height = 1.6 #shooter eye height above DEM for viewshed [m]

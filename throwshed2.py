@@ -460,7 +460,11 @@ def assign_values_to_throwshed(k):
                 continue
             # if viewshed is incorporated and particular cell is not visible, nothing is added to throwshed cell, and for visible cells the algorithm proceeds with assessment of cells
             if UV:
-                if not VA[i][j]:
+                # for case when only visible, hittable areas are sought
+                if UV == 1 and not VA[i][j]:
+                    continue
+                # for case when only invisible, hittable areas are sought
+                elif UV == -1 and VA[i][j]:
                     continue
             # calculate coordinates of cell's middle point and its horizontal distance from shooting point
             X_coor_cell = DGT[0]+(j+1/2)*DGT[1]
