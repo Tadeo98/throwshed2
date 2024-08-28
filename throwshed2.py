@@ -19,21 +19,27 @@ import numerical_methods
 
 def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, throwshed_mode,
          use_viewshed, use_lines, cumulative_throwshed, EPSG, atmosphere_type, numerical_method,
-         trajectory_segment_dimension, irregular_projectile, initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass, cross_sectional_area,
+         trajectory_segment_dimension, irregular_projectile, initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass, cross_sectional_area, azimuth_min, azimuth_max,
          eyes_height, target_height, wall_height, wall_width, peak_drag, peak_area, oscillation_distance, oscillation_frequency, band_number=1,
          interpolation=1, alpha_min=-90.0, alpha_max=90.0, gravitational_acceleration=9.81, air_density=1.225,
          trajectory_segment_size=None):
     """Just main function with controls, global variables settings and triggers to other functions"""
-    # making sure the vertical angle has correct range
+    # making sure the vertical angle and azimuth has correct range
     if alpha_max < alpha_min:
         print("Minimal vertical shooting angle higher than maximal.")
         exit()
     if not -90 <= alpha_max <= 90 or not -90 <= alpha_min <= 90:
         print("Minimal or maximal vertical shooting angle out of allowed range <-90°,+90°>.")
         exit()
+    if azimuth_max < azimuth_min:
+        print("Minimal azimuth higher than maximal.")
+        exit()
+    if not 0 <= azimuth_max <= 360 or not 0 <= azimuth_min <= 360:
+        print("Minimal or maximal azimuth out of allowed range <0°,360°>.")
+        exit()
     # Global variables
     global SRS, DP, PLP, TOF, TF, TM, UV, UL, CT, ATM, TSD, IP, NM, BN, INT, BF, TSS, RR, AL, DDS, DB, DA, DGT, DMINH, \
-        DMAXH, IH, IV, D2M, T0, DIA, M, CSA, GA, AD, EH, TH, PD, PA, OD, OF, NDV, TA, VDS, VB, VA, VGT
+        DMAXH, IH, IV, D2M, T0, DIA, M, CSA, AMIN, AMAX, GA, AD, EH, TH, PD, PA, OD, OF, NDV, TA, VDS, VB, VA, VGT
     # CRS and other variable definition
     SRS = osr.SpatialReference()
     SRS.ImportFromEPSG(EPSG)
@@ -60,6 +66,8 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
         burn_obstacles(line_layer_path, wall_height, wall_width)
     # get minimum and maximum DEM height
     DMINH, DMAXH = get_min_max_height()
+    # transform azimuth values from degrees to radians
+    AMIN, AMAX = np.radians(azimuth_min), np.radians(azimuth_max)
     # obtain list of vertical angles
     AL = np.linspace(np.radians(alpha_min), np.radians(alpha_max), 37)
     # throwshed array containing zeroes at first, will be edited later, dimensions same as dimensions of DEM raster
@@ -476,10 +484,37 @@ def assign_values_to_throwshed(k):
             absolute_cell = ogr.Geometry(ogr.wkbPoint)
             relative_cell.AddPoint(cell_distance, float(DA[i][j]))
             absolute_cell.AddPoint(X_coor_cell, Y_coor_cell)
+
+            # calculate azimuth of trajectory (shooting point to cell point), there is a chance of Y difference to be 0, therefore the exception
+            dX = absolute_cell.GetX() - SP.GetX()
+            dY = absolute_cell.GetY() - SP.GetY()
+            # for case when the shooting point is right on teh cell, cell is automatically reachable
+            if not round(dX / RR) and not round(dY / RR):
+                TA[0][i][j] += 1
+                TA[1][i][j] += 1
+                continue
+            try:
+                azimuth = np.arctan(dX / dY)
+            except ZeroDivisionError:
+                # for the case of dY being 0, making the division impossible
+                if dX > 0:
+                    azimuth = np.radians(90)
+                else:
+                    azimuth = np.radians(270)
+            # azimuth needs to be recalculated accordingly to correct quadrant
+            if dY > 0:
+                if dX < 0:
+                    azimuth += np.radians(360)
+            elif dY < 0:
+                azimuth += np.radians(180)
+            # azimuth needs to be in specified azimuth range
+            if not (AMAX >= azimuth >= AMIN):
+                continue
+
             # detect cell within the fields and call function to find cell intersecting trajectory and to determine whether the cell is reachable without any obstacles
             if ATF_polygon.Intersects(relative_cell):
                 if TM:
-                    if cell_availability(1, relative_cell, absolute_cell):
+                    if cell_availability(1, relative_cell, azimuth):
                         TA[0][i][j] += 1
                 # for the case only cell's presence within the field is assessed
                 else:
@@ -488,13 +523,13 @@ def assign_values_to_throwshed(k):
             if DTF_polygon and not (not CT and TA[1][i][j]):
                 if DTF_polygon.Intersects(relative_cell):
                     if TM:
-                        if cell_availability(-1, relative_cell, absolute_cell):
+                        if cell_availability(-1, relative_cell, azimuth):
                             TA[1][i][j] += 1
                     # for the case only cell's presence within the field is assessed
                     else:
                         TA[1][i][j] += 1
 
-def cell_availability(dir, relative_cell, absolute_cell):
+def cell_availability(dir, relative_cell, azimuth):
     """Finds trajectory that intersects the cell (or is close enough, within allowed distance). For ATF cycle
     increments from start to end of trajectory set and viceversa for DTF. Returns True if the cell is accessible
     or False if the cell is not accessible without any obstacles - this is determined by further function."""
@@ -553,7 +588,7 @@ def cell_availability(dir, relative_cell, absolute_cell):
                 normal1 = compute_normal(i, relative_cell.GetX(), relative_cell.GetY())
                 # if cell is not close enough to trajectory to consider it as piercing trajectory, following trajectory is tested. If it is close enough, it will be used as the index of intersecting trajectory in the terrain comparison
                 if not np.round(normal1 / RR):
-                    if trajectory_terrain_comparison(i, relative_cell, absolute_cell):
+                    if trajectory_terrain_comparison(i, relative_cell, azimuth):
                         del TS[ITSI:ITSI + ITIS]
                         return True
                     # 1 is changed to 0 so next time the condition is eluded
@@ -561,7 +596,7 @@ def cell_availability(dir, relative_cell, absolute_cell):
             if i2 - i and ITF[1]:
                 normal2 = compute_normal(i+1, relative_cell.GetX(), relative_cell.GetY())
                 if not np.round(normal2 / RR):
-                    if trajectory_terrain_comparison(i+1, relative_cell, absolute_cell):
+                    if trajectory_terrain_comparison(i+1, relative_cell, azimuth):
                         del TS[ITSI:ITSI + ITIS]
                         return True
                     ITF[1] -= 1
@@ -607,36 +642,16 @@ def compute_normal(i, X_relative_cell, Y_relative_cell):
     area = (s * (s - a) * (s - b) * (s - c)) ** (1 / 2)
     return area / c * 2
 
-def trajectory_terrain_comparison(i, relative_cell, absolute_cell):
+def trajectory_terrain_comparison(i, relative_cell, azimuth):
     """Computes coordinates of terrain corresponding to each trajectory point and returns True or False depending
     on the result of terrain and trajectory point heights comparison."""
-    # calculate azimuth of trajectory (shooting point to cell point), there is a chance of Y difference to be 0, therefore the exception
-    dX = absolute_cell.GetX() - SP.GetX()
-    dY = absolute_cell.GetY() - SP.GetY()
-    # for case when the shooting point is right on teh cell, cell is automatically reachable
-    if not round(dX/RR) and not round(dY/RR):
-        return True
-    try:
-        Azimuth = np.arctan(dX / dY)
-    except ZeroDivisionError:
-        # for the case of dY being 0, making the division impossible
-        if dX > 0:
-            Azimuth = np.radians(90)
-        else:
-            Azimuth = np.radians(270)
-    # azimuth needs to be recalculated accordingly to correct quadrant
-    if dY > 0:
-        if dX < 0:
-            Azimuth += np.radians(360)
-    elif dY < 0:
-        Azimuth += np.radians(180)
     # cycle iterates from first point of trajectory to the first point of segment closest to the cell point
     for X, Y in zip(TS[i][1][0],TS[i][1][1]):
         # if compared point is already above/below destination cell's area or beyond, cell is considered reachable
         if X >= relative_cell.GetX()-RR/2:
             return True
-        X_compare_point = SP.GetX() + X * np.sin(Azimuth)
-        Y_compare_point = SP.GetY() + X * np.cos(Azimuth)
+        X_compare_point = SP.GetX() + X * np.sin(azimuth)
+        Y_compare_point = SP.GetY() + X * np.cos(azimuth)
         Z_compare_point = int_function(X_compare_point, Y_compare_point)
         # if trajectory point is on or below terrain, False is returned
         if Y <= Z_compare_point:

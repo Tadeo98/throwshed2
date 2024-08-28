@@ -82,7 +82,7 @@ def main():
         throwshed_mode,use_viewshed,use_lines,cumulative_throwshed,EPSG,atmosphere_type,numerical_method,
         trajectory_segment_dimension,irregular_projectile,parameters.get("initial_height")[i],parameters.get("initial_velocity")[i],
         parameters.get("drag_to_mach")[i],parameters.get("temperature")[i],parameters.get("diameter")[i],
-        parameters.get("mass")[i],parameters.get("cross_sectional_area")[i],eyes_height,target_height,wall_height,
+        parameters.get("mass")[i],parameters.get("cross_sectional_area")[i],azimuth_min,azimuth_max,target_height,wall_height,
         wall_width,peak_drag,peak_area,oscillation_distance,oscillation_frequency,band_number=band_number,
         interpolation=interpolation,alpha_min=alpha_min,alpha_max=alpha_max,
         gravitational_acceleration=parameters.get("gravitational_acceleration")[i],
@@ -175,9 +175,11 @@ mass = [0.100, 0.000] #projectile mass [kg]
 alpha_min = -90.0 #minimum of vertical angle range at which the projectile is shot [°]
 alpha_max = 90.0 #maximum of vertical angle range at which the projectile is shot [°]
 trajectory_segment_size = None  # distance step (length or width), at which trajectory's points will be saved and compared to DEM [m], None = adjusted to DEM resolution (cell's size), any float/int value = customized distance step (equal or less than raster resolution)
+azimuth_min = 45 #minimum of the azimuth range [°]
+azimuth_max = 180 #maximum of the azimuth range [°]
 eyes_height = 1.6  # shooter eye height above DEM for viewshed [m]
 target_height = 1.7  # target height for viewshed [m]
-wall_height = 4.0  # obstacle/wall height (if obstacle option is used) [m]
+wall_height = 4.0  # obstacle/wall height or ditch depth (if obstacle option is used) [m]
 wall_width = 0.2  # obstacle/wall width (if obstacle option is used) [m]
 oscillation_frequency = 60 #frequency of area and drag coefficient change for projectile oscillation/rotation, 0 means no oscillation/rotation effect [Hz] or [s^-1]
 oscillation_distance = 20 #distance (of curved ballistic trajectory) up to which the rotation/oscillation of projectile linearly decreases (no rotation/oscillation afterwards), if 0, the rotation/oscillation effect remains same for whole trajectory [m]
