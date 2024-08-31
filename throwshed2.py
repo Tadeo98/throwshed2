@@ -13,13 +13,14 @@ import numpy as np
 from osgeo import gdal, ogr, osr
 from timeit import default_timer as timer
 import numerical_methods
+import multiprocessing as mp
 
 #######################################################################
 ## FUNCTIONS
 
 def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, throwshed_mode,
          use_viewshed, use_lines, cumulative_throwshed, EPSG, atmosphere_type, numerical_method,
-         trajectory_segment_dimension, irregular_projectile, initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass, cross_sectional_area, azimuth_min, azimuth_max,
+         trajectory_segment_dimension, irregular_projectile, cores, initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass, cross_sectional_area, azimuth_min, azimuth_max,
          eyes_height, target_height, wall_height, wall_width, peak_drag, peak_area, oscillation_distance, oscillation_frequency, band_number=1,
          interpolation=1, alpha_min=-90.0, alpha_max=90.0, gravitational_acceleration=9.81, air_density=1.225,
          trajectory_segment_size=None):
@@ -38,7 +39,7 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
         print("Minimal or maximal azimuth out of allowed range <0°,360°>.")
         exit()
     # Global variables
-    global SRS, DP, PLP, TOF, TF, TM, UV, UL, CT, ATM, TSD, IP, NM, BN, INT, BF, TSS, RR, AL, DDS, DB, DA, DGT, DMINH, \
+    global SRS, DP, PLP, TOF, TF, TM, UV, UL, CT, ATM, TSD, IP, COR, NM, BN, INT, BF, TSS, RR, AL, DDS, DB, DA, DGT, DMINH, \
         DMAXH, IH, IV, D2M, T0, DIA, M, CSA, AMIN, AMAX, GA, AD, EH, TH, PD, PA, OD, OF, NDV, TA, VDS, VB, VA, VGT
     # CRS and other variable definition
     SRS = osr.SpatialReference()
@@ -68,6 +69,12 @@ def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, t
     DMINH, DMAXH = get_min_max_height()
     # transform azimuth values from degrees to radians
     AMIN, AMAX = np.radians(azimuth_min), np.radians(azimuth_max)
+    # core number definition, if inserted number of cores is 0 or more than available cores, global COR is set to all available cores
+    available_cores = mp.cpu_count()
+    if cores > available_cores or not cores:
+        COR = available_cores
+    else:
+        COR = cores
     # obtain list of vertical angles
     AL = np.linspace(np.radians(alpha_min), np.radians(alpha_max), 37)
     # throwshed array containing zeroes at first, will be edited later, dimensions same as dimensions of DEM raster
@@ -164,19 +171,19 @@ def create_and_use_outlayer(layer_name, geom):
     outlayer.CreateFeature(feature)
     return outds, outlayer
 
-def create_raster_file(raster_name, dem_array_list, method, GDT, no_data):
+def create_raster_file(raster_name, array_list, method, GDT, no_data):
     """Creates raster file. Method 0 returns empty datasource and band. Method 1 returns datasource and band with written array"""
     # create driver and output data source
     outds = gdal.GetDriverByName('GTiff').Create(TOF + "\\" + raster_name + ".tif", xsize=DA.shape[1],
-                                                 ysize=DA.shape[0], bands=len(dem_array_list), eType=GDT)
+                                                 ysize=DA.shape[0], bands=len(array_list), eType=GDT)
     # assign geotransformation, projection, band and nodata settings
     outds.SetGeoTransform(DGT)
     outds.SetProjection(SRS.ExportToWkt())
-    for i, dem_array in enumerate(dem_array_list):
+    for i, array in enumerate(array_list):
         raster_band = outds.GetRasterBand(i+1)
         raster_band.SetNoDataValue(no_data)
         if method:
-            raster_band.WriteArray(dem_array)
+            raster_band.WriteArray(array)
     return outds, raster_band
 
 def remove_temp_files(temp_file):
@@ -186,7 +193,7 @@ def remove_temp_files(temp_file):
 
 def throwshed(point_geom, k):
     """Calculates throwshed for 1 point"""
-    global SP, WH
+    global SP, WH, TA, VA
     # create shooting point with Z coordinate that is interpolated from DEM
     SP = ogr.Geometry(ogr.wkbPoint)
     SP.AddPoint(point_geom.GetX(), point_geom.GetY(), float(int_function(point_geom.GetX(), point_geom.GetY()))+IH)
@@ -194,13 +201,48 @@ def throwshed(point_geom, k):
     trajectory_simple_set()
     # insert trajectories between those from simple set, to ensure throwshed's edge accuracy
     trajectory_set()
-    # define Ascending and Descending Trajectory Fields
-    create_trajectory_fields()
-    # if viewshed is ON, it has to be created and deleted later
+    # if viewshed is ON, it has to be created and deleted later, also viewshed chunks are generated for multiprocessing
     if UV:
         create_viewshed()
-    # Assign values into arrays of 2 bands (ATF and DTF)
-    assign_values_to_throwshed(k)
+    else:
+        # just for case there is no viewshed, still the multiprocessing requires some values of VA, even though not utilized
+        VA = [0]*len(DA)
+    # computation of approximate range (does not account for terrain elevation differences)
+    if AL[-1] >= np.radians(45) >= AL[0]:
+        elev_anle = np.radians(45)
+    elif AL[-1] < np.radians(45):
+        elev_anle = AL[-1]
+    elif AL[0] > np.radians(45):
+        elev_anle = AL[0]
+    range_0 = max(NM(IH, AD, DIA, M, IV, elev_anle, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, 0)[0])
+    # approximate throwshed radius
+    ATR = int(np.abs(round(range_0/DGT[5])))
+    # shooting point offset (row within raster)
+    SPO = int(round(np.abs((SP.GetY() - (DGT[3] + DGT[5] / 2)) / DGT[5])))
+    # approximate throwshed start (row where throwshed starts within raster)
+    ATS = SPO - ATR if SPO - ATR > 0 else 0
+    # approximate throwshed end (row where throwshed ends within raster)
+    ATE = SPO + ATR if SPO + ATR < len(DA) else len(DA)
+    # throwshed chunk width (in rows)
+    TCW = int(round((ATE - ATS)/COR))
+    # chunk border indexes, for the case of 1 core there will be only two borders
+    CBI = [0]
+    if COR != 1:
+        for i in range(1, COR):
+            CBI += [ATS + TCW*i]
+    CBI += [len(DA)-1]
+    chunks_for_process = []
+    # following cycle creates list consisting chunks where each consists of 2-band throwshed, 1-band dem, 1-band viewshed, the number of weapon for which the throwshed is computed, index from which the chunk starts within the whole throwshed array and other global parameters that have to be sent individually
+    for ch_n in range(COR):
+        chunks_for_process += [[TS, [TA[0][CBI[ch_n]:CBI[ch_n+1]], TA[1][CBI[ch_n]:CBI[ch_n+1]]], DA[CBI[ch_n]:CBI[ch_n+1]], VA[CBI[ch_n]:CBI[ch_n+1]], k, CBI[ch_n], NDV, CT, UV, DGT, [SP.GetX(), SP.GetY(), SP.GetZ()], RR, AMIN, AMAX, TM, envelope, NM, AD, DIA, M, IV, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH, INT, DA]]
+    # create processes pool for (multi)processing of actual throwshed
+    with mp.Pool(processes=COR) as pool:
+        # Assign values into arrays of 2 bands (ATF and DTF)
+        TA_chunks_new = pool.map(assign_values_to_throwshed, chunks_for_process)
+    # add (multi)processed chunks into throwshed array
+    for ch_n in range(COR):
+        TA[0][CBI[ch_n]:CBI[ch_n+1]] = TA_chunks_new[ch_n][0]
+        TA[1][CBI[ch_n]:CBI[ch_n+1]] = TA_chunks_new[ch_n][1]
 
 def int_function(X, Y):
     """Interpolates height of point from DEM cells"""
@@ -417,7 +459,6 @@ def update_envelope(method, TRAJ, XIIPR, XII, YII, YIPR):
 
 def create_trajectory_fields():
     """Creates ATF - Ascending Trajectory Field and DTF - Descending Trajectory Field. Lists are made into polygons."""
-    global ATF_polygon, DTF_polygon
     ATF_polygon, DTF_polygon = None, None
     ATF, DTF = [[], []], [[], []]
     # in this case DTF does not exist
@@ -439,6 +480,7 @@ def create_trajectory_fields():
         # create polygons out of the lists
         ATF_polygon = create_polygon_from_coords_list(ATF)
         DTF_polygon = create_polygon_from_coords_list(DTF)
+    return ATF_polygon, DTF_polygon
 
 def create_polygon_from_coords_list(x_y_list):
     """Creates ring from list of X and Y coordinates, then uses ring to create polygon which is returned."""
@@ -451,38 +493,46 @@ def create_polygon_from_coords_list(x_y_list):
     polygon.AddGeometry(ring)
     return polygon
 
-def assign_values_to_throwshed(k):
+def assign_values_to_throwshed(chunks_for_process):
     """Assigns/adds values into throwshed arrays."""
-    # cycle going through every single cell of DEM
-    for i in range(DA.shape[0]):
-        for j in range(DA.shape[1]):
+    global TS, envelope, SP, RR, azimuth, relative_cell, NM, AD, DIA, M, IV, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH, INT, DGT, ACSR, DA
+    # getting values from sent list of data consisting of 2-band array chunk, 1-band dem chunk, the number of weapon for which the throwshed is computed and index from which the chunk starts within the whole throwshed array and other parameters
+    TS, TA_chunk, DA_chunk, VA_chunk, k, ACSR, NDV, CT, UV, DGT, SP_l, RR, AMIN, AMAX, TM, envelope, NM, AD, DIA, M, IV, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH, INT, DA = chunks_for_process
+    # shooting point geometry (has to be created within the process because sending OGR objects to multiprocessing process from outside gives errors)
+    SP = ogr.Geometry(ogr.wkbPoint)
+    SP.AddPoint(SP_l[0], SP_l[1], SP_l[2])
+    # define Ascending and Descending Trajectory Fields
+    ATF_polygon, DTF_polygon = create_trajectory_fields()
+    # cycle going through every single cell of DEM chunk
+    for i in range(DA_chunk.shape[0]):
+        for j in range(DA_chunk.shape[1]):
             # with multiple shooting points nodata value can already be assigned to the cell, therefore the algorithm jumps to following cell
-            if TA[0][i][j] == NDV:
+            if TA_chunk[0][i][j] == NDV:
                 continue
             # nodata value is assigned to both arrays for both bands (ATF and DTF)
-            if not k and DA[i][j] == NDV:
-                TA[0][i][j] = TA[1][i][j] = NDV
+            if not k and DA_chunk[i][j] == NDV:
+                TA_chunk[0][i][j] = TA_chunk[1][i][j] = NDV
                 continue
             # for simple throwshed, if cell already has value 1, cycle continues with following cell, otherwise for cumulative throwshed, cell is assessed, descending trajectory does not need to be checked because if the cell is hittable by ascending trajectory, it has to be hittable by descending as well
-            if k and not CT and TA[0][i][j]:
+            if k and not CT and TA_chunk[0][i][j]:
                 continue
             # if viewshed is incorporated and particular cell is not visible, nothing is added to throwshed cell, and for visible cells the algorithm proceeds with assessment of cells
             if UV:
                 # for case when only visible, hittable areas are sought
-                if UV == 1 and not VA[i][j]:
+                if UV == 1 and not VA_chunk[i][j]:
                     continue
                 # for case when only invisible, hittable areas are sought
-                elif UV == -1 and VA[i][j]:
+                elif UV == -1 and VA_chunk[i][j]:
                     continue
             # calculate coordinates of cell's middle point and its horizontal distance from shooting point
             X_coor_cell = DGT[0]+(j+1/2)*DGT[1]
-            Y_coor_cell = DGT[3]+(i+1/2)*DGT[5]
+            Y_coor_cell = DGT[3]+(ACSR+i+1/2)*DGT[5]
             cell_distance = ((SP.GetX() - X_coor_cell)**2 + (SP.GetY()-Y_coor_cell)**2)**(1/2)
             # create cell point with relative coordinates in the plane of trajectories and find out whether it's within the field, if so, further actions are conducted
             relative_cell = ogr.Geometry(ogr.wkbPoint)
             # also create cell point with absolute coordinates in the plane of projection plane, will be used in terrain comparison to calculate azimuth
             absolute_cell = ogr.Geometry(ogr.wkbPoint)
-            relative_cell.AddPoint(cell_distance, float(DA[i][j]))
+            relative_cell.AddPoint(cell_distance, float(DA_chunk[i][j]))
             absolute_cell.AddPoint(X_coor_cell, Y_coor_cell)
 
             # calculate azimuth of trajectory (shooting point to cell point), there is a chance of Y difference to be 0, therefore the exception
@@ -490,8 +540,8 @@ def assign_values_to_throwshed(k):
             dY = absolute_cell.GetY() - SP.GetY()
             # for case when the shooting point is right on teh cell, cell is automatically reachable
             if not round(dX / RR) and not round(dY / RR):
-                TA[0][i][j] += 1
-                TA[1][i][j] += 1
+                TA_chunk[0][i][j] += 1
+                TA_chunk[1][i][j] += 1
                 continue
             try:
                 azimuth = np.arctan(dX / dY)
@@ -514,22 +564,23 @@ def assign_values_to_throwshed(k):
             # detect cell within the fields and call function to find cell intersecting trajectory and to determine whether the cell is reachable without any obstacles
             if ATF_polygon.Intersects(relative_cell):
                 if TM:
-                    if cell_availability(1, relative_cell, azimuth):
-                        TA[0][i][j] += 1
+                    if cell_availability(1):
+                        TA_chunk[0][i][j] += 1
                 # for the case only cell's presence within the field is assessed
                 else:
-                    TA[0][i][j] += 1
+                    TA_chunk[0][i][j] += 1
             # can be None and also if CT is 0 and cell has a value already, no intersecting trajectory is found
-            if DTF_polygon and not (not CT and TA[1][i][j]):
+            if DTF_polygon and not (not CT and TA_chunk[1][i][j]):
                 if DTF_polygon.Intersects(relative_cell):
                     if TM:
-                        if cell_availability(-1, relative_cell, azimuth):
-                            TA[1][i][j] += 1
+                        if cell_availability(-1):
+                            TA_chunk[1][i][j] += 1
                     # for the case only cell's presence within the field is assessed
                     else:
-                        TA[1][i][j] += 1
+                        TA_chunk[1][i][j] += 1
+    return TA_chunk
 
-def cell_availability(dir, relative_cell, azimuth):
+def cell_availability(dir):
     """Finds trajectory that intersects the cell (or is close enough, within allowed distance). For ATF cycle
     increments from start to end of trajectory set and viceversa for DTF. Returns True if the cell is accessible
     or False if the cell is not accessible without any obstacles - this is determined by further function."""
@@ -588,7 +639,7 @@ def cell_availability(dir, relative_cell, azimuth):
                 normal1 = compute_normal(i, relative_cell.GetX(), relative_cell.GetY())
                 # if cell is not close enough to trajectory to consider it as piercing trajectory, following trajectory is tested. If it is close enough, it will be used as the index of intersecting trajectory in the terrain comparison
                 if not np.round(normal1 / RR):
-                    if trajectory_terrain_comparison(i, relative_cell, azimuth):
+                    if trajectory_terrain_comparison(i):
                         del TS[ITSI:ITSI + ITIS]
                         return True
                     # 1 is changed to 0 so next time the condition is eluded
@@ -596,7 +647,7 @@ def cell_availability(dir, relative_cell, azimuth):
             if i2 - i and ITF[1]:
                 normal2 = compute_normal(i+1, relative_cell.GetX(), relative_cell.GetY())
                 if not np.round(normal2 / RR):
-                    if trajectory_terrain_comparison(i+1, relative_cell, azimuth):
+                    if trajectory_terrain_comparison(i+1):
                         del TS[ITSI:ITSI + ITIS]
                         return True
                     ITF[1] -= 1
@@ -642,7 +693,7 @@ def compute_normal(i, X_relative_cell, Y_relative_cell):
     area = (s * (s - a) * (s - b) * (s - c)) ** (1 / 2)
     return area / c * 2
 
-def trajectory_terrain_comparison(i, relative_cell, azimuth):
+def trajectory_terrain_comparison(i):
     """Computes coordinates of terrain corresponding to each trajectory point and returns True or False depending
     on the result of terrain and trajectory point heights comparison."""
     # cycle iterates from first point of trajectory to the first point of segment closest to the cell point

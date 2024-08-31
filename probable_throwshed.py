@@ -80,7 +80,7 @@ def main():
         # generate one throwshed
         throwshed2.main(DEM_path,point_layer_path,line_layer_path,throwshed_output_folder,throwshed_file,
         throwshed_mode,use_viewshed,use_lines,cumulative_throwshed,EPSG,atmosphere_type,numerical_method,
-        trajectory_segment_dimension,irregular_projectile,parameters.get("initial_height")[i],parameters.get("initial_velocity")[i],
+        trajectory_segment_dimension,irregular_projectile,cores,parameters.get("initial_height")[i],parameters.get("initial_velocity")[i],
         parameters.get("drag_to_mach")[i],parameters.get("temperature")[i],parameters.get("diameter")[i],
         parameters.get("mass")[i],parameters.get("cross_sectional_area")[i],azimuth_min,azimuth_max,target_height,wall_height,
         wall_width,peak_drag,peak_area,oscillation_distance,oscillation_frequency,band_number=band_number,
@@ -159,6 +159,7 @@ numerical_method = "euler2D"  # numerical method that calculates the ballistic t
 trajectory_segment_dimension = 1  # decides whether trajectory segment size stands for its width (horizontal) = 0, or length (slant) = 1 (if set to width, shooting angles close to -90 and 90 are dangerous to use as minimum and maximum of the range)
 irregular_projectile = 1 #use diameter to calculate symmetric circle cross-sectional area of projectile = 0, use cross_sectional_area for irregular shape of the projectile = 1
 MCS_dist = 1 # decides whether values generate as uniformly distributed within the range (MCS_dev_range) = 0, or as normally distributed due to parameter deviation (MCS_dev_range) = 1
+cores = 0 #number of cores allocated for multiprocessing, 0-n, where 0 means all cores
 
 ## VARIABLES
 #following 8 can be set as an array of randomly generated values, format [mean, deviation/one way range]:
