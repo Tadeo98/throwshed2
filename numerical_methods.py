@@ -34,6 +34,17 @@ def interpolate_C_D(C_D_t, Mach):
         C_D = d2M
     return C_D
 
+def downwards_traj90(points, TSS, DMINH):
+    """
+    Function that helps quickly finish computing the rest of 90° trajectory downwards from the apex of trajectory.
+    """
+    while points[1][-1] - TSS > DMINH:
+        points[0].append(points[0][-1])
+        points[1].append(points[1][-1] - TSS)
+    points[0].append(points[0][-1])
+    points[1].append(DMINH)
+    return points
+
 def euler2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH):
     """
     Euler differential method, generates trajectory 2D coordinates list.
@@ -123,6 +134,10 @@ def euler2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, P
         F_y = C_D_x*V_y-G/(V_x if V_x else abs(V_y))
         # new velocity elements
         V_x, V_y = V_x + F_x*TSW, V_y + (F_y*TSW if V_x else F_y*TSS)
+        # fast finish of 90° trajectory downwards from the apex
+        if VA == np.radians(90) and V_y < 0:
+            points = downwards_traj90(points, TSS, DMINH)
+            break
     return points
 
 def euler3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH):
@@ -315,6 +330,10 @@ def heun2D(Y_0, AD, d, M, V, VA, T_0, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, PA
                 points[0][-1] = points[0][-2] + (points[1][-1] - points[1][-2]) * (V_x + V_x_c) / (V_y + V_y_c)
             break
         V_x, V_y = V_x_c, V_y_c
+        # fast finish of 90° trajectory downwards from the apex
+        if VA == np.radians(90) and V_y < 0:
+            points = downwards_traj90(points, TSS, DMINH)
+            break
     return points
 
 def heun3D(Y_0, AD, d, M, V, VA, W_x, W_z, T_0, Phi, Azi, atm_t, C_D_t, G, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH):

@@ -20,10 +20,9 @@ import multiprocessing as mp
 
 def main(dem_path, point_layer_path, line_layer_path, throwshed_output_folder, throwshed_file, throwshed_mode,
          use_viewshed, use_lines, cumulative_throwshed, EPSG, atmosphere_type, numerical_method,
-         trajectory_segment_dimension, irregular_projectile, cores, initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass, cross_sectional_area, azimuth_min, azimuth_max,
+         trajectory_segment_dimension, irregular_projectile, cores, initial_height, initial_velocity, drag_to_mach, temperature, diameter, mass, cross_sectional_area, trajectory_segment_size, azimuth_min, azimuth_max,
          eyes_height, target_height, wall_height, wall_width, peak_drag, peak_area, oscillation_distance, oscillation_frequency, band_number=1,
-         interpolation=1, alpha_min=-90.0, alpha_max=90.0, gravitational_acceleration=9.81, air_density=1.225,
-         trajectory_segment_size=None):
+         interpolation=1, alpha_min=-90.0, alpha_max=90.0, gravitational_acceleration=9.81, air_density=1.225):
     """Just main function with controls, global variables settings and triggers to other functions"""
     # making sure the vertical angle and azimuth has correct range
     if alpha_max < alpha_min:
@@ -206,43 +205,46 @@ def throwshed(point_geom, k):
         create_viewshed()
     else:
         # just for case there is no viewshed, still the multiprocessing requires some values of VA, even though not utilized
-        VA = [0]*len(DA)
-    # computation of approximate range (does not account for terrain elevation differences)
-    if AL[-1] >= np.radians(45) >= AL[0]:
-        elev_anle = np.radians(45)
-    elif AL[-1] < np.radians(45):
-        elev_anle = AL[-1]
-    elif AL[0] > np.radians(45):
-        elev_anle = AL[0]
-    range_0 = max(NM(IH, AD, DIA, M, IV, elev_anle, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, 0)[0])
-    # approximate throwshed radius
-    ATR = int(np.abs(round(range_0/DGT[5])))
-    # shooting point offset (row within raster)
-    SPO = int(round(np.abs((SP.GetY() - (DGT[3] + DGT[5] / 2)) / DGT[5])))
-    # approximate throwshed start (row where throwshed starts within raster)
-    ATS = SPO - ATR if SPO - ATR > 0 else 0
-    # approximate throwshed end (row where throwshed ends within raster)
-    ATE = SPO + ATR if SPO + ATR < len(DA) else len(DA)
-    # throwshed chunk width (in rows)
-    TCW = int(round((ATE - ATS)/COR))
-    # chunk border indexes, for the case of 1 core there will be only two borders
-    CBI = [0]
-    if COR != 1:
-        for i in range(1, COR):
-            CBI += [ATS + TCW*i]
-    CBI += [len(DA)-1]
-    chunks_for_process = []
-    # following cycle creates list consisting chunks where each consists of 2-band throwshed, 1-band dem, 1-band viewshed, the number of weapon for which the throwshed is computed, index from which the chunk starts within the whole throwshed array and other global parameters that have to be sent individually
-    for ch_n in range(COR):
-        chunks_for_process += [[TS, [TA[0][CBI[ch_n]:CBI[ch_n+1]], TA[1][CBI[ch_n]:CBI[ch_n+1]]], DA[CBI[ch_n]:CBI[ch_n+1]], VA[CBI[ch_n]:CBI[ch_n+1]], k, CBI[ch_n], NDV, CT, UV, DGT, [SP.GetX(), SP.GetY(), SP.GetZ()], RR, AMIN, AMAX, TM, envelope, NM, AD, DIA, M, IV, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH, INT, DA]]
+        VA = 0
+
+    # azimuth borders indexes for multiprocessing
+    ABI = [AMIN]
+    for i in range(1, COR):
+        ABI += [ABI[-1] + (AMAX-AMIN)/COR]
+    ABI += [AMAX]
+
+    # X and Y SP to border (Top, Bottom, Left and Right) Differences (to middle points of rows and columns)
+    YSPTD = DGT[3] + DGT[5] / 2 - SP.GetY()
+    YSPBD = DGT[3] + DGT[5]*(len(DA)-0.5) - SP.GetY()
+    XSPLD = DGT[0] + DGT[1] / 2 - SP.GetX()
+    XSPRD = DGT[0] + DGT[1]*(len(DA[0])-0.5) - SP.GetX()
+
+    # Top Left, Top Right, Bottom Right and Bottom Left Cell Azimuth
+    TLCA = compute_azimuth(XSPLD, YSPTD)
+    TRCA = compute_azimuth(XSPRD, YSPTD)
+    BRCA = compute_azimuth(XSPRD, YSPBD)
+    BLCA = compute_azimuth(XSPLD, YSPBD)
+
+    # Maximal Possible Range
+    MPR = max(TS, key=lambda x: x[1][0][-1])[1][0][-1]
+
+    data_for_process = []
+    # cycle creates list consisting of TS, TA, DA...
+    for c_n in range(COR):
+        data_for_process += [[TS, TA, DA, VA, k, NDV, CT, UV, DGT, [SP.GetX(), SP.GetY(), SP.GetZ()], RR, ABI[c_n], ABI[c_n+1], TM, envelope, NM, AD, DIA, M, IV, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH, INT, COR, TLCA, TRCA, BRCA, BLCA, YSPTD, YSPBD, XSPLD, XSPRD, MPR]]
     # create processes pool for (multi)processing of actual throwshed
     with mp.Pool(processes=COR) as pool:
         # Assign values into arrays of 2 bands (ATF and DTF)
-        TA_chunks_new = pool.map(assign_values_to_throwshed, chunks_for_process)
-    # add (multi)processed chunks into throwshed array
-    for ch_n in range(COR):
-        TA[0][CBI[ch_n]:CBI[ch_n+1]] = TA_chunks_new[ch_n][0]
-        TA[1][CBI[ch_n]:CBI[ch_n+1]] = TA_chunks_new[ch_n][1]
+        TA_list = pool.map(assign_values_to_throwshed, data_for_process)
+    # add (multi)processed TA results and rewrite throwshed array
+    # TA_b1 = TA_list[0][0]
+    # TA_b2 = TA_list[0][1]
+    for c_n in range(COR):
+        TA[0] += TA_list[c_n][0]
+        TA[1] += TA_list[c_n][1]
+        # TA_b1 += TA_list[c_n][0]
+        # TA_b2 += TA_list[c_n][1]
+    # TA = [TA_b1,TA_b2]
 
 def int_function(X, Y):
     """Interpolates height of point from DEM cells"""
@@ -493,92 +495,180 @@ def create_polygon_from_coords_list(x_y_list):
     polygon.AddGeometry(ring)
     return polygon
 
-def assign_values_to_throwshed(chunks_for_process):
+def assign_values_to_throwshed(data_for_process):
     """Assigns/adds values into throwshed arrays."""
-    global TS, envelope, SP, RR, azimuth, relative_cell, NM, AD, DIA, M, IV, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH, INT, DGT, ACSR, DA
-    # getting values from sent list of data consisting of 2-band array chunk, 1-band dem chunk, the number of weapon for which the throwshed is computed and index from which the chunk starts within the whole throwshed array and other parameters
-    TS, TA_chunk, DA_chunk, VA_chunk, k, ACSR, NDV, CT, UV, DGT, SP_l, RR, AMIN, AMAX, TM, envelope, NM, AD, DIA, M, IV, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH, INT, DA = chunks_for_process
+    global TS, envelope, SP, SPR, SPC, RR, AMIN, AMAX, azimuth, relative_cell, NM, AD, DIA, M, IV, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH, INT, DGT, DA, TLCA, TRCA, BRCA, BLCA, YSPTD, YSPBD, XSPLD, XSPRD
+    # getting values from sent list of data consisting of TS, TA, DA...
+    TS, TA, DA, VA, k, NDV, CT, UV, DGT, SP_l, RR, AMIN, AMAX, TM, envelope, NM, AD, DIA, M, IV, T0, ATM, D2M, GA, TSS, TSD, IP, CSA, PD, PA, OD, OF, DMINH, INT, COR, TLCA, TRCA, BRCA, BLCA, YSPTD, YSPBD, XSPLD, XSPRD, MPR = data_for_process
+
+    # throwshed array for single use containing zeroes
+    TASU = [np.zeros((DA.shape[0], DA.shape[1]), np.int16), np.zeros((DA.shape[0], DA.shape[1]), np.int16)]
+
     # shooting point geometry (has to be created within the process because sending OGR objects to multiprocessing process from outside gives errors)
     SP = ogr.Geometry(ogr.wkbPoint)
     SP.AddPoint(SP_l[0], SP_l[1], SP_l[2])
     # define Ascending and Descending Trajectory Fields
     ATF_polygon, DTF_polygon = create_trajectory_fields()
-    # cycle going through every single cell of DEM chunk
-    for i in range(DA_chunk.shape[0]):
-        for j in range(DA_chunk.shape[1]):
+
+
+    # Shooting Point Row, AMIN Border Row and AMAX Border Row
+    SPR = round(np.abs((DGT[3] + DGT[5] / 2 - SP.GetY()) / DGT[5]))
+    # Shooting Point Column, AMIN Border Column and AMAX Border Column
+    # SPC = round(np.abs((SP.GetX() - (DGT[0] + DGT[1] / 2)) / DGT[5]))
+    AMINBR = border_row_by_azimuth(AMIN)
+    AMAXBR = border_row_by_azimuth(AMAX)
+
+    (first_row, last_row) = (min(SPR, AMINBR, AMAXBR), len(DA)-1) if AMIN < BRCA and AMAX > BLCA and COR == 1 else (min(SPR, AMINBR, AMAXBR), max(SPR, AMINBR, AMAXBR))
+
+
+    # Shooting point within cell row position (derives whether the point is closer to upper border (0) or the lower border (1) of the cell)
+    SPWCRP = round(((DGT[3] - SP.GetY()) % abs(DGT[5])) / abs(DGT[5]))
+    # Shooting point within cell column position (derives whether the point is closer to left border (0) or the right border (1) of the cell)
+    # SPWCCP = round(((SP.GetX() - DGT[0]) % DGT[1]) / DGT[1])
+    # first and last row need to be adjusted because the SPR just stands for the row where the shooting point is
+    if first_row == SPR and SPWCRP:
+        first_row += 1  #shooting point in lower part of the cell
+    if last_row == SPR and not SPWCRP:
+        last_row -= 1   #shooting point in upper part of the cell
+
+
+    # calculate Y coordinate of cell's middle point at the first row (actually the one before that does not exist)
+    Y_coor_cell = DGT[3] - DGT[5] / 2 + first_row*DGT[5]
+    # calculate Y coord difference to shooting point
+    dY = Y_coor_cell - SP.GetY()
+
+
+    # cycle going through every single cell of DEM
+    for i in range(first_row, last_row+1):
+        # Y cell size added to coordinate and subtracted from Y coordinate difference
+        Y_coor_cell += DGT[5]
+        dY += DGT[5]
+        # # Top Left, Top Right, Bottom Right and Bottom Left Cell Azimuth of Actual Row
+        # TLCAAR = compute_azimuth(XSPLD, Y_coor_cell)
+        # TRCAAR = compute_azimuth(XSPRD, Y_coor_cell)
+        # BRCAAR = compute_azimuth(XSPRD, DGT[3] + DGT[5] / 2 + last_row*DGT[5])
+        # BLCAAR = compute_azimuth(XSPLD, DGT[3] + DGT[5] / 2 + last_row*DGT[5])
+        #
+        #
+        # AMINBC = border_column_by_azimuth(AMIN, dY, TLCAAR, TRCAAR, BRCAAR, BLCAAR)
+        # AMAXBC = border_column_by_azimuth(AMAX, dY, TLCAAR, TRCAAR, BRCAAR, BLCAAR)
+        # if AMIN < TRCAAR and AMAX > BRCAAR:
+        #     first_column, last_column = min(AMINBC, AMAXBC), len(DA[0]) - 1
+        # elif AMIN < BLCAAR and AMAX > TLCAAR:
+        #     first_column, last_column = 0, max(AMINBC, AMAXBC)
+        # else:
+        #     first_column, last_column = min(AMINBC, AMAXBC), max(AMINBC, AMAXBC)
+        # # first and last column need to be adjusted because the SPC just stands for the column where the shooting point is
+        # if first_column == SPC and SPWCCP:
+        #     first_column += 1  # shooting point in left part of the cell
+        # if last_column == SPC and not SPWCCP:
+        #     last_column -= 1  # shooting point in right part of the cell
+
+
+
+        # calculate X coordinate of cell's middle point at the first column (actually the one before that does not exist)
+        X_coor_cell = DGT[0] - DGT[1] / 2 #+ first_column*DGT[1]
+        # calculate X coord difference to shooting point
+        dX = X_coor_cell - SP.GetX()
+        for j in range(len(DA[0])):
+
+
+        # for j in range(first_column, last_column+1):
+
+
+            # X cell size added to coordinate and subtracted from X coordinate difference
+            X_coor_cell += DGT[1]
+            dX += DGT[1]
+            # calculate azimuth of trajectory (shooting point to cell point)
+            azimuth = compute_azimuth(dX, dY)
+            # azimuth needs to be in specified azimuth range
+            if not (AMAX > azimuth >= AMIN):
+                continue
+
+            # calculate cell's horizontal distance from shooting point
+            cell_distance = ((SP.GetX() - X_coor_cell)**2 + (SP.GetY()-Y_coor_cell)**2)**(1/2)
+            # cells could be out of maximal possible range reach
+            if MPR < cell_distance:
+                continue
+            # create cell point with relative coordinates in the plane of trajectories to later find out whether it's within the field, if so, further actions are conducted
+            relative_cell = ogr.Geometry(ogr.wkbPoint)
+            relative_cell.AddPoint(cell_distance, float(DA[i][j]))
+
             # with multiple shooting points nodata value can already be assigned to the cell, therefore the algorithm jumps to following cell
-            if TA_chunk[0][i][j] == NDV:
+            if TA[0][i][j] == NDV:
                 continue
             # nodata value is assigned to both arrays for both bands (ATF and DTF)
-            if not k and DA_chunk[i][j] == NDV:
-                TA_chunk[0][i][j] = TA_chunk[1][i][j] = NDV
+            if not k and DA[i][j] == NDV:
+                TASU[0][i][j] = TASU[1][i][j] = NDV
                 continue
             # for simple throwshed, if cell already has value 1, cycle continues with following cell, otherwise for cumulative throwshed, cell is assessed, descending trajectory does not need to be checked because if the cell is hittable by ascending trajectory, it has to be hittable by descending as well
-            if k and not CT and TA_chunk[0][i][j]:
+            if k and not CT and TA[0][i][j]:
                 continue
             # if viewshed is incorporated and particular cell is not visible, nothing is added to throwshed cell, and for visible cells the algorithm proceeds with assessment of cells
             if UV:
                 # for case when only visible, hittable areas are sought
-                if UV == 1 and not VA_chunk[i][j]:
+                if UV == 1 and not VA[i][j]:
                     continue
                 # for case when only invisible, hittable areas are sought
-                elif UV == -1 and VA_chunk[i][j]:
+                elif UV == -1 and VA[i][j]:
                     continue
-            # calculate coordinates of cell's middle point and its horizontal distance from shooting point
-            X_coor_cell = DGT[0]+(j+1/2)*DGT[1]
-            Y_coor_cell = DGT[3]+(ACSR+i+1/2)*DGT[5]
-            cell_distance = ((SP.GetX() - X_coor_cell)**2 + (SP.GetY()-Y_coor_cell)**2)**(1/2)
-            # create cell point with relative coordinates in the plane of trajectories and find out whether it's within the field, if so, further actions are conducted
-            relative_cell = ogr.Geometry(ogr.wkbPoint)
-            # also create cell point with absolute coordinates in the plane of projection plane, will be used in terrain comparison to calculate azimuth
-            absolute_cell = ogr.Geometry(ogr.wkbPoint)
-            relative_cell.AddPoint(cell_distance, float(DA_chunk[i][j]))
-            absolute_cell.AddPoint(X_coor_cell, Y_coor_cell)
-
-            # calculate azimuth of trajectory (shooting point to cell point), there is a chance of Y difference to be 0, therefore the exception
-            dX = absolute_cell.GetX() - SP.GetX()
-            dY = absolute_cell.GetY() - SP.GetY()
-            # for case when the shooting point is right on teh cell, cell is automatically reachable
-            if not round(dX / RR) and not round(dY / RR):
-                TA_chunk[0][i][j] += 1
-                TA_chunk[1][i][j] += 1
-                continue
-            try:
-                azimuth = np.arctan(dX / dY)
-            except ZeroDivisionError:
-                # for the case of dY being 0, making the division impossible
-                if dX > 0:
-                    azimuth = np.radians(90)
-                else:
-                    azimuth = np.radians(270)
-            # azimuth needs to be recalculated accordingly to correct quadrant
-            if dY > 0:
-                if dX < 0:
-                    azimuth += np.radians(360)
-            elif dY < 0:
-                azimuth += np.radians(180)
-            # azimuth needs to be in specified azimuth range
-            if not (AMAX >= azimuth >= AMIN):
-                continue
 
             # detect cell within the fields and call function to find cell intersecting trajectory and to determine whether the cell is reachable without any obstacles
             if ATF_polygon.Intersects(relative_cell):
                 if TM:
                     if cell_availability(1):
-                        TA_chunk[0][i][j] += 1
+                        TASU[0][i][j] += 1
                 # for the case only cell's presence within the field is assessed
                 else:
-                    TA_chunk[0][i][j] += 1
+                    TASU[0][i][j] += 1
             # can be None and also if CT is 0 and cell has a value already, no intersecting trajectory is found
-            if DTF_polygon and not (not CT and TA_chunk[1][i][j]):
+            if DTF_polygon and not (not CT and TA[1][i][j]):
                 if DTF_polygon.Intersects(relative_cell):
                     if TM:
                         if cell_availability(-1):
-                            TA_chunk[1][i][j] += 1
+                            TASU[1][i][j] += 1
                     # for the case only cell's presence within the field is assessed
                     else:
-                        TA_chunk[1][i][j] += 1
-    return TA_chunk
+                        TASU[1][i][j] += 1
+    return TASU
+
+def border_row_by_azimuth(A):
+    """Based on azimuth returns the row of array where the direction intersects the array border"""
+    if A == np.pi/2 or A == np.pi*3/2:
+        return SPR
+    if A >= TLCA or A < TRCA:
+        return 0
+    if BLCA > A >= BRCA:
+        return len(DA)-1
+    # this auxiliary parameter helps distinct between incorporating the row that is lower than SP and higher
+    n = abs(DGT[5]) if np.pi*3/2 > A > np.pi / 2 else 0
+    if BRCA > A >= TRCA:
+        return round(abs(((DGT[3] - n) - (SP.GetY() + XSPRD * np.tan(np.pi / 2 - A))) / DGT[5]))
+    if TLCA > A >= BLCA:
+        return round(abs(((DGT[3] - n) - (SP.GetY() - XSPLD * np.tan(A - np.pi*3/2))) / DGT[5]))
+
+# def border_column_by_azimuth(A, dY, TLCAAR, TRCAAR, BRCAAR, BLCAAR):
+#     """Based on azimuth returns the row of array where the direction intersects the array border"""
+#     if A == 0 or A == np.pi:
+#         return SPC
+#     if BLCAAR <= A < TLCAAR:
+#         return 0
+#     if BRCAAR > A >= TRCAAR:
+#         return len(DA[0])-1
+#     # this auxiliary parameter helps distinct between incorporating the column that is right of SP and left
+#     n = DGT[1] if np.pi/2 > A > 0 else 0
+#     if A >= TLCAAR or A < TRCAAR:
+#         return round(abs(((SP.GetX() + dY * np.tan(A)) - (DGT[0] + n)) / DGT[1]))
+#     if BLCAAR > A >= BRCAAR:
+#         return round(abs(((SP.GetX() - dY * np.tan(np.pi - A)) - (DGT[0] + n)) / DGT[1]))
+
+def compute_azimuth(dx, dy):
+    """Calculates and returns azimuth based on X and Y coord differences"""
+    azimuth = np.arctan2(dx,dy)
+    # arctan2 gives values from -180 to +180 degrees, therefore the adjustment
+    if azimuth < 0:
+        azimuth += 2*np.pi
+    return azimuth
 
 def cell_availability(dir):
     """Finds trajectory that intersects the cell (or is close enough, within allowed distance). For ATF cycle
